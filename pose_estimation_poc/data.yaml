@@ -1,0 +1,13 @@
+path: C:/Users/SM 461/Desktop/merged utility/pose_estimation_poc/dataset
+train: images/train
+val: images/val
+names:
+  0: wire_red
+  1: wire_black
+kpt_shape:
+- 3
+- 3
+flip_idx:
+- 0
+- 1
+- 2

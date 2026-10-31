@@ -1,0 +1,8 @@
+# Solder Ball Dataset Configuration for Ultralytics YOLO
+path: C:/Users/SM 461/Desktop/merged utility/solderball detection platform/data
+train: images/train
+val: images/val
+
+# Classes
+names:
+  0: solder_ball
