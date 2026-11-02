@@ -49,8 +49,9 @@ def get_origin3_model():
     global _ORIGIN3_MODEL
     if _ORIGIN3_MODEL is None:
         o_paths = [
-            os.path.join(WORKSPACE_DIR, "runs", "origin3_model", "weights", "best.pt"),
             os.path.join(SCRIPT_DIR, "runs", "origin3_model", "weights", "best.pt"),
+            os.path.join(WORKSPACE_DIR, "runs", "origin3_model", "weights", "best.pt"),
+            os.path.join(SCRIPT_DIR, "yolov8n.pt"),
             os.path.join(WORKSPACE_DIR, "yolov8n.pt"),
         ]
         chosen = None
@@ -63,6 +64,13 @@ def get_origin3_model():
         print(f"[DualInspection] Loading Origin 3 model from: {chosen}")
         _ORIGIN3_MODEL = YOLO(chosen)
     return _ORIGIN3_MODEL
+
+
+def reload_origin3_model():
+    global _ORIGIN3_MODEL
+    _ORIGIN3_MODEL = None
+    print("[DualInspection] Reloading Origin 3 model weights...")
+    return get_origin3_model()
 
 
 def inspect_origin3(model, image_input, conf=0.4):

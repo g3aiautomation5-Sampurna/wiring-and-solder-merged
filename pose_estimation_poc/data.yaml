@@ -1,4 +1,4 @@
-path: C:/Users/SM 461/Desktop/merged utility/pose_estimation_poc/dataset
+path: c:/Users/SM 461/Desktop/merged utility/pose_estimation_poc/dataset
 train: images/train
 val: images/val
 names:

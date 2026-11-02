@@ -61,6 +61,24 @@ def auto_heal_yaml_paths():
         except Exception as e:
             print(f"[WARN] Could not update solder data.yaml path: {e}")
 
+    # 3. Origin 3 Side data.yaml
+    orig3_yaml = os.path.join(POSE_DIR, "origin3_dataset", "yolo_dataset", "data.yaml")
+    orig3_dataset = os.path.join(POSE_DIR, "origin3_dataset", "yolo_dataset").replace("\\", "/")
+    if os.path.exists(orig3_yaml):
+        try:
+            with open(orig3_yaml, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            new_lines = []
+            for l in lines:
+                if l.strip().startswith("path:"):
+                    new_lines.append(f"path: {orig3_dataset}\n")
+                else:
+                    new_lines.append(l)
+            with open(orig3_yaml, "w", encoding="utf-8") as f:
+                f.writelines(new_lines)
+        except Exception as e:
+            print(f"[WARN] Could not update Origin 3 data.yaml path: {e}")
+
 auto_heal_yaml_paths()
 
 # Import the sub-applications
@@ -496,12 +514,13 @@ def application(environ, start_response):
     )):
         return solder_app.app(environ, start_response)
 
-    # Route Wire Harness Pose API requests to wiring_app
+    # Route Wire Harness Pose & Origin 3 API requests to wiring_app
     elif path.startswith((
         "/api/inspect",
         "/api/classes",
         "/api/annotation",
-        "/api/train"
+        "/api/train",
+        "/api/origin3"
     )):
         return wiring_app.app(environ, start_response)
 

@@ -26,7 +26,7 @@ from ultralytics import YOLO
 
 # Import inspection engine
 from inspect_pose import inspect_image
-from dual_inspection import inspect_dual_system, inspect_origin3, get_origin3_model, get_pose_model
+from dual_inspection import inspect_dual_system, inspect_origin3, get_origin3_model, get_pose_model, reload_origin3_model
 
 app = Flask(__name__)
 
@@ -36,6 +36,15 @@ MODEL_NAME = "best.pt"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_YAML_PATH = os.path.join(SCRIPT_DIR, "data.yaml")
 COLORS_PATH = os.path.join(SCRIPT_DIR, "class_colors.json")
+
+# Origin 3 Side Model dataset paths
+ORIGIN3_DATASET_DIR = os.path.join(SCRIPT_DIR, "origin3_dataset")
+ORIGIN3_IMAGES_DIR = os.path.join(ORIGIN3_DATASET_DIR, "images")
+ORIGIN3_LABELS_DIR = os.path.join(ORIGIN3_DATASET_DIR, "labels")
+ORIGIN3_YOLO_DIR = os.path.join(ORIGIN3_DATASET_DIR, "yolo_dataset")
+ORIGIN3_YAML_PATH = os.path.join(ORIGIN3_YOLO_DIR, "data.yaml")
+os.makedirs(ORIGIN3_IMAGES_DIR, exist_ok=True)
+os.makedirs(ORIGIN3_LABELS_DIR, exist_ok=True)
 
 # Default color palette for wire classes
 DEFAULT_PALETTE = [
@@ -217,6 +226,208 @@ class TrainingManager:
             self.log(f"Training error encountered: {type(e).__name__}: {str(e)}")
 
 training_mgr = TrainingManager()
+
+
+def prepare_origin3_yolo_dataset(split_ratio=0.8, seed=42):
+    import random
+    random.seed(seed)
+
+    all_images = sorted(
+        glob.glob(os.path.join(ORIGIN3_IMAGES_DIR, "*.jpg")) +
+        glob.glob(os.path.join(ORIGIN3_IMAGES_DIR, "*.png")) +
+        glob.glob(os.path.join(ORIGIN3_IMAGES_DIR, "*.jpeg"))
+    )
+
+    if not all_images:
+        return False, "No images found in origin3_dataset/images"
+
+    labeled_pairs = []
+    unlabeled_images = []
+
+    for img_path in all_images:
+        base_name = os.path.splitext(os.path.basename(img_path))[0]
+        lbl_path = os.path.join(ORIGIN3_LABELS_DIR, f"{base_name}.txt")
+        if os.path.exists(lbl_path) and os.path.getsize(lbl_path) > 0:
+            labeled_pairs.append((img_path, lbl_path))
+        else:
+            unlabeled_images.append(img_path)
+
+    if not labeled_pairs:
+        return False, "No labeled images found in origin3_dataset/labels. Please annotate at least one image."
+
+    random.shuffle(labeled_pairs)
+    train_count = max(1, int(len(labeled_pairs) * split_ratio))
+    train_pairs = labeled_pairs[:train_count]
+    val_pairs = labeled_pairs[train_count:]
+    if not val_pairs:
+        val_pairs = [train_pairs[-1]]
+
+    dirs = {
+        "train_img": os.path.join(ORIGIN3_YOLO_DIR, "images", "train"),
+        "val_img": os.path.join(ORIGIN3_YOLO_DIR, "images", "val"),
+        "train_lbl": os.path.join(ORIGIN3_YOLO_DIR, "labels", "train"),
+        "val_lbl": os.path.join(ORIGIN3_YOLO_DIR, "labels", "val"),
+    }
+
+    if os.path.exists(ORIGIN3_YOLO_DIR):
+        try:
+            shutil.rmtree(ORIGIN3_YOLO_DIR)
+        except Exception:
+            pass
+    for d in dirs.values():
+        os.makedirs(d, exist_ok=True)
+
+    for img, lbl in train_pairs:
+        shutil.copy2(img, dirs["train_img"])
+        shutil.copy2(lbl, dirs["train_lbl"])
+
+    for img, lbl in val_pairs:
+        shutil.copy2(img, dirs["val_img"])
+        shutil.copy2(lbl, dirs["val_lbl"])
+
+    yaml_content = {
+        "path": ORIGIN3_YOLO_DIR.replace("\\", "/"),
+        "train": "images/train",
+        "val": "images/val",
+        "names": {
+            0: "origin_3"
+        }
+    }
+    with open(ORIGIN3_YAML_PATH, "w", encoding="utf-8") as f:
+        yaml.dump(yaml_content, f, sort_keys=False)
+
+    return True, f"Origin 3 dataset split complete: {len(train_pairs)} train, {len(val_pairs)} val images."
+
+
+class Origin3TrainingManager:
+    def __init__(self):
+        self.status = "idle"
+        self.total_epochs = 0
+        self.current_epoch = 0
+        self.progress_percent = 0
+        self.logs = []
+        self.error_msg = ""
+        self.thread = None
+
+    def log(self, msg):
+        timestamp = time.strftime("%H:%M:%S")
+        entry = f"[{timestamp}] {msg}"
+        print(f"[ORIGIN3-TRAIN] {msg}")
+        self.logs.append(entry)
+        if len(self.logs) > 300:
+            self.logs = self.logs[-300:]
+
+    def start(self, epochs=30, batch=8, weights_choice="best"):
+        if self.status == "training":
+            return False, "Training is already in progress for Origin 3."
+
+        self.status = "training"
+        self.total_epochs = epochs
+        self.current_epoch = 0
+        self.progress_percent = 0
+        self.logs = []
+        self.error_msg = ""
+
+        self.thread = threading.Thread(target=self._run_train, args=(epochs, batch, weights_choice), daemon=True)
+        self.thread.start()
+        return True, "Origin 3 retraining started in background."
+
+    def _run_train(self, epochs, batch, weights_choice):
+        try:
+            self.log(f"Preparing Origin 3 YOLO dataset split (80/20)...")
+            ok, prep_msg = prepare_origin3_yolo_dataset()
+            if not ok:
+                raise RuntimeError(prep_msg)
+            self.log(prep_msg)
+
+            # Clear cache files
+            for pattern in [
+                os.path.join(ORIGIN3_YOLO_DIR, "labels", "*.cache"),
+                os.path.join(ORIGIN3_YOLO_DIR, "labels", "*", "*.cache")
+            ]:
+                for c_file in glob.glob(pattern):
+                    try: os.remove(c_file)
+                    except Exception: pass
+
+            best_weights = os.path.join(SCRIPT_DIR, "runs", "origin3_model", "weights", "best.pt")
+            if not os.path.exists(best_weights):
+                best_weights = os.path.join(os.path.dirname(SCRIPT_DIR), "runs", "origin3_model", "weights", "best.pt")
+
+            if weights_choice == "best" and os.path.exists(best_weights):
+                base_model_path = best_weights
+                self.log(f"Fine-tuning from existing best model: {os.path.basename(best_weights)}")
+            else:
+                base_model_path = os.path.join(SCRIPT_DIR, "yolov8n.pt")
+                if not os.path.exists(base_model_path):
+                    base_model_path = os.path.join(os.path.dirname(SCRIPT_DIR), "yolov8n.pt")
+                if not os.path.exists(base_model_path):
+                    base_model_path = "yolov8n.pt"
+                self.log(f"Training from base nano weights: {os.path.basename(base_model_path)}")
+
+            self.log(f"Loading YOLO model: {base_model_path}")
+            model = YOLO(base_model_path)
+
+            def on_epoch_end(trainer):
+                try:
+                    ep = trainer.epoch + 1
+                    total = trainer.epochs
+                    self.current_epoch = ep
+                    self.progress_percent = int((ep / total) * 100)
+                    loss_str = ""
+                    if hasattr(trainer, 'loss_items') and trainer.loss_items is not None:
+                        items = trainer.loss_items
+                        if isinstance(items, dict):
+                            total_loss = sum(float(v) for v in items.values())
+                            loss_str = f" | Loss: {total_loss:.4f}"
+                        elif hasattr(items, '__getitem__'):
+                            loss_str = f" | Loss: {float(items[0]):.4f}"
+                    self.log(f"Epoch {ep}/{total} finished [{self.progress_percent}%]{loss_str}")
+                except Exception as cb_err:
+                    print(f"[CALLBACK WARN] {cb_err}")
+
+            model.add_callback("on_train_epoch_end", on_epoch_end)
+
+            self.log(f"Starting Ultralytics YOLOv8 training: {epochs} epochs, batch size {batch}...")
+            results = model.train(
+                data=ORIGIN3_YAML_PATH,
+                epochs=epochs,
+                imgsz=640,
+                batch=batch,
+                device="cpu",
+                workers=0,
+                project=os.path.join(SCRIPT_DIR, "runs"),
+                name="origin3_model",
+                exist_ok=True,
+                plots=True,
+                verbose=False
+            )
+
+            # Sync generated weights to workspace runs directory as well
+            gen_best = os.path.join(SCRIPT_DIR, "runs", "origin3_model", "weights", "best.pt")
+            ws_runs_best = os.path.join(os.path.dirname(SCRIPT_DIR), "runs", "origin3_model", "weights", "best.pt")
+            if os.path.exists(gen_best):
+                try:
+                    os.makedirs(os.path.dirname(ws_runs_best), exist_ok=True)
+                    shutil.copy2(gen_best, ws_runs_best)
+                except Exception as sync_err:
+                    self.log(f"[WARN] Sync weights error: {sync_err}")
+
+            self.status = "completed"
+            self.progress_percent = 100
+            self.log("Origin 3 training successfully completed! Generated new best.pt.")
+            reload_origin3_model()
+            self.log("Side Inspection model hot-reloaded with updated weights in dual inspection engine.")
+
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[ORIGIN3 TRAIN ERROR]\n{tb}")
+            self.status = "error"
+            self.error_msg = str(e)
+            self.log(f"Origin 3 training error: {type(e).__name__}: {str(e)}")
+
+
+origin3_training_mgr = Origin3TrainingManager()
 
 def parse_dual_result(dual_res):
     pose_res = dual_res.get("pose_result", {})
@@ -1086,6 +1297,36 @@ HTML_TEMPLATE = """
         .defects-box ul { padding-left: 20px; color: #fca5a5; }
 
         /* ================= 2. ANNOTATION & RETRAINING VIEW ================= */
+        .filter-tabs-row {
+            display: flex;
+            gap: 4px;
+            margin-top: 2px;
+            margin-bottom: 4px;
+        }
+
+        .filter-pill {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            font-size: 0.7rem;
+            padding: 3px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.15s;
+        }
+
+        .filter-pill:hover {
+            color: #ffffff;
+            border-color: #64748b;
+        }
+
+        .filter-pill.active {
+            background: rgba(6, 182, 212, 0.2);
+            color: #38bdf8;
+            border-color: #0284c7;
+        }
+
         .studio-workspace {
             display: grid;
             grid-template-columns: 280px 1fr 340px;
@@ -1526,11 +1767,14 @@ HTML_TEMPLATE = """
 
             <!-- Top View Switcher -->
             <div class="nav-tabs">
-                <button class="nav-tab-btn active" id="btnNavInspect" onclick="switchMainTab('inspect')">
+                <button class="nav-tab-btn active" id="btnNavInspect" onclick="switchMainTab('inspect')" title="Live Dual Camera Inspection Station">
                     🔍 Inspection Station
                 </button>
-                <button class="nav-tab-btn" id="btnNavStudio" onclick="switchMainTab('studio')">
-                    🛠️ Annotation & Retraining Studio
+                <button class="nav-tab-btn" id="btnNavTopStudio" onclick="switchMainTab('top_studio')" title="Top View Wire Pose Keypoint Annotation & Retraining">
+                    📐 Top Annotation & Retraining
+                </button>
+                <button class="nav-tab-btn" id="btnNavSideStudio" onclick="switchMainTab('side_studio')" title="Side View Origin 3 Bounding Box Annotation & Retraining">
+                    🔌 Side Annotation & Retraining
                 </button>
             </div>
         </div>
@@ -1830,7 +2074,7 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
-    <!-- ================= VIEW 2: ANNOTATION & RETRAINING STUDIO ================= -->
+    <!-- ================= VIEW 2: TOP MODEL (WIRE POSE) ANNOTATION & RETRAINING STUDIO ================= -->
     <div class="main-view" id="viewStudio">
         <div class="studio-workspace">
             
@@ -1980,6 +2224,162 @@ HTML_TEMPLATE = """
         </div>
     </div>
 
+    <!-- ================= VIEW 3: SIDE MODEL (ORIGIN 3) ANNOTATION & RETRAINING STUDIO ================= -->
+    <div class="main-view" id="viewSideStudio">
+        <div class="studio-workspace">
+            
+            <!-- Left Panel: Origin 3 Target & Side Images Queue -->
+            <div class="studio-card">
+                <div class="card-header-title">
+                    <span>Origin 3 Target Class</span>
+                    <span class="badge" style="background: rgba(6, 182, 212, 0.18); color: #38bdf8; border: 1px solid rgba(6, 182, 212, 0.4);">
+                        Class 0: origin_3
+                    </span>
+                </div>
+
+                <div style="background: var(--bg-card); border-radius: 6px; padding: 8px 10px; font-size: 0.76rem; border: 1px solid var(--border);">
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                        <span style="width: 10px; height: 10px; border-radius: 50%; background: #06b6d4; display: inline-block;"></span>
+                        <b style="color: #f8fafc;">origin_3</b>
+                        <span style="color: var(--text-muted); font-size: 0.7rem;">(YOLO Object Detection)</span>
+                    </div>
+                    <p style="color: var(--text-muted); font-size: 0.72rem; line-height: 1.35;">
+                        Click and drag a bounding box enclosing the Origin 3 connector terminal.
+                    </p>
+                </div>
+
+                <hr style="border-color: var(--border); margin: 4px 0;">
+
+                <div class="card-header-title">
+                    <span>Side View Images</span>
+                    <button class="tool-btn" style="padding: 3px 8px; font-size: 0.72rem;" onclick="document.getElementById('sideUploadInput').click()">
+                        + Upload
+                    </button>
+                    <input type="file" id="sideUploadInput" accept="image/*" multiple class="hidden" onchange="handleSideUpload(event)">
+                </div>
+
+                <div style="display: flex; gap: 6px; font-size: 0.74rem;">
+                    <button class="tool-btn" style="flex:1; padding:4px;" onclick="snapSideCamera()">📸 Cam 2 (Side)</button>
+                    <button class="tool-btn" style="flex:1; padding:4px;" onclick="fetchSideImages()">🔄 Refresh</button>
+                </div>
+
+                <!-- Filter Chips -->
+                <div class="filter-tabs-row">
+                    <button class="filter-pill active" id="sideFilterBtnAll" onclick="setSideFilter('all')">All (<span id="sideCountAll">0</span>)</button>
+                    <button class="filter-pill" id="sideFilterBtnLabeled" onclick="setSideFilter('labeled')">Labeled (<span id="sideCountLabeled">0</span>)</button>
+                    <button class="filter-pill" id="sideFilterBtnUnlabeled" onclick="setSideFilter('unlabeled')">Unlabeled (<span id="sideCountUnlabeled">0</span>)</button>
+                </div>
+
+                <div class="image-list-box" id="sideImageList" style="max-height: 440px;">
+                    <!-- Loaded dynamically -->
+                </div>
+            </div>
+
+            <!-- Center Panel: Interactive Bounding Box Canvas -->
+            <div class="studio-card" id="sideCenterCard" style="padding: 10px;">
+                <div class="canvas-toolbar">
+                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                        <span id="sideCanvasStatus" style="font-weight: 700; color: #38bdf8; font-size: 0.85rem;">
+                            Target: Origin 3 &bull; Drag to Draw Box
+                        </span>
+                        <span id="sideCurrentImgBadge" style="font-size: 0.72rem; color: #cbd5e1; background: var(--bg-card); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border);">
+                            No image loaded
+                        </span>
+                    </div>
+
+                    <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+                        <button class="tool-btn" style="color: #38bdf8; border-color: rgba(6, 182, 212, 0.4);" onclick="sidePreAnnotate()" title="Run current Origin 3 model to auto-detect box">
+                            🤖 Auto-Detect
+                        </button>
+                        <button class="tool-btn" id="btnToggleSideFs" onclick="toggleFullscreenSideAnnotation()">⛶ Fullscreen</button>
+                        <button class="tool-btn" onclick="clearSideBox()">↩️ Clear Box</button>
+                        <button class="tool-btn" style="color: #f87171;" onclick="deleteCurrentSideImage()">🗑️ Delete Image</button>
+                        <button class="tool-btn primary" style="background: #0284c7; border-color: #0284c7;" onclick="saveSideAnnotation()">💾 Save Annotation</button>
+                    </div>
+                </div>
+
+                <div class="canvas-container" id="sideCanvasContainer">
+                    <canvas id="sideCanvas"></canvas>
+                </div>
+
+                <!-- Bounding Box Details -->
+                <div class="finished-wires-box" id="sideBoxDetailsBox">
+                    <div class="finished-wires-header">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <span style="font-size: 0.74rem; font-weight: 700; color: #94a3b8; text-transform: uppercase;">
+                                📦 Origin 3 Bounding Box:
+                            </span>
+                            <span id="sideBoxBadge" style="background: rgba(6, 182, 212, 0.2); color: #38bdf8; border: 1px solid rgba(6, 182, 212, 0.4); padding: 1px 7px; border-radius: 10px; font-size: 0.7rem; font-weight: 700;">
+                                None
+                            </span>
+                        </div>
+                        <span id="sideBoxCoords" style="color: #64748b; font-size: 0.75rem; font-family: monospace;">
+                            No box drawn yet. Drag rectangle across Origin 3.
+                        </span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Panel: Origin 3 Retraining Management -->
+            <div class="studio-card">
+                <div class="card-header-title">
+                    <span>Origin 3 Retraining</span>
+                    <span class="badge badge-model" id="sideTrainStatusBadge">Idle</span>
+                </div>
+
+                <div style="background: var(--bg-card); border-radius: 6px; padding: 10px; font-size: 0.78rem;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                        <span style="color: var(--text-muted);">Dataset Images:</span>
+                        <b id="sideDsTotal">--</b>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                        <span style="color: var(--text-muted);">Labeled / Unlabeled:</span>
+                        <span><b id="sideDsLabeled" style="color: #34d399;">--</b> / <b id="sideDsUnlabeled" style="color: #f59e0b;">--</b></span>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                        <span style="color: var(--text-muted);">Split:</span>
+                        <b>80% Train / 20% Val</b>
+                    </div>
+                    <div style="display: flex; justify-content: space-between;">
+                        <span style="color: var(--text-muted);">Device:</span>
+                        <b id="sideDsDevice">CPU (Optimized)</b>
+                    </div>
+                </div>
+
+                <div style="display: flex; flex-direction: column; gap: 6px; font-size: 0.78rem;">
+                    <label>Training Epochs:</label>
+                    <input type="number" id="sideTrainEpochsInput" min="5" max="150" value="30">
+
+                    <label>Batch Size:</label>
+                    <input type="number" id="sideTrainBatchInput" min="2" max="32" value="8">
+
+                    <label>Base Weights:</label>
+                    <select id="sideTrainWeightsSelect" class="anno-class-select" style="width: 100%;">
+                        <option value="best">Continue from Current best.pt (Fine-tune)</option>
+                        <option value="nano">Train Fresh from yolov8n.pt</option>
+                    </select>
+                </div>
+
+                <button class="btn-snap" id="btnStartSideTrain" style="justify-content: center; width: 100%; border-radius: 6px; background: #0284c7;" onclick="startSideRetraining()">
+                    🚀 Retrain Side Model (Origin 3)
+                </button>
+
+                <div>
+                    <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted);">
+                        <span>Training Progress</span>
+                        <span id="sideTrainProgressText">0%</span>
+                    </div>
+                    <div class="progress-bar-wrap">
+                        <div class="progress-bar-fill" id="sideTrainProgressBar" style="background: linear-gradient(90deg, #0284c7, #06b6d4, #10b981);"></div>
+                    </div>
+                </div>
+
+                <div class="retrain-console" id="sideTrainConsole" style="color: #67e8f9;">Origin 3 retraining console waiting for run...</div>
+            </div>
+
+        </div>
+    </div>
+
     <!-- Modal: Add New Class -->
     <div class="modal-overlay hidden" id="addClassModal">
         <div class="modal-box">
@@ -2049,16 +2449,31 @@ HTML_TEMPLATE = """
         });
 
         function switchMainTab(tab) {
+            if (tab === 'studio') tab = 'top_studio';
             currentTab = tab;
-            document.getElementById('btnNavInspect').classList.toggle('active', tab === 'inspect');
-            document.getElementById('btnNavStudio').classList.toggle('active', tab === 'studio');
-            document.getElementById('viewInspect').classList.toggle('active', tab === 'inspect');
-            document.getElementById('viewStudio').classList.toggle('active', tab === 'studio');
 
-            if (tab === 'studio') {
+            const btnInspect = document.getElementById('btnNavInspect');
+            const btnTop = document.getElementById('btnNavTopStudio');
+            const btnSide = document.getElementById('btnNavSideStudio');
+
+            if (btnInspect) btnInspect.classList.toggle('active', tab === 'inspect');
+            if (btnTop) btnTop.classList.toggle('active', tab === 'top_studio');
+            if (btnSide) btnSide.classList.toggle('active', tab === 'side_studio');
+
+            const viewInspect = document.getElementById('viewInspect');
+            const viewStudio = document.getElementById('viewStudio');
+            const viewSideStudio = document.getElementById('viewSideStudio');
+
+            if (viewInspect) viewInspect.classList.toggle('active', tab === 'inspect');
+            if (viewStudio) viewStudio.classList.toggle('active', tab === 'top_studio');
+            if (viewSideStudio) viewSideStudio.classList.toggle('active', tab === 'side_studio');
+
+            if (tab === 'top_studio') {
                 loadStudioData();
+            } else if (tab === 'side_studio') {
+                loadSideStudioData();
             } else {
-                if (document.getElementById('tabCamera').classList.contains('active')) {
+                if (document.getElementById('tabCamera') && document.getElementById('tabCamera').classList.contains('active')) {
                     if (activeStream1) webcam1.play();
                     if (activeStream2) webcam2.play();
                 }
@@ -3244,6 +3659,532 @@ HTML_TEMPLATE = """
             }, 1500);
         }
 
+        // ================= SIDE MODEL (ORIGIN 3) STUDIO LOGIC =================
+        let sideCurrentImgName = "";
+        let sideCurrentImgLoaded = null;
+        let sideImgOrigW = 1280, sideImgOrigH = 720;
+        let sideBBox = null; // [x1, y1, x2, y2]
+        let sideIsDrawing = false;
+        let sideDrawStartX = 0, sideDrawStartY = 0, sideDrawCurX = 0, sideDrawCurY = 0;
+        let sideImagesList = [];
+        let sideCurrentFilter = 'all';
+        let isFullscreenSideAnno = false;
+
+        const sideCanvas = document.getElementById('sideCanvas');
+        const ctxSide = sideCanvas ? sideCanvas.getContext('2d') : null;
+
+        async function loadSideStudioData() {
+            await fetchSideStats();
+            await fetchSideImages();
+        }
+
+        async function fetchSideStats() {
+            try {
+                const res = await fetch('/api/origin3/dataset/stats');
+                const data = await res.json();
+                const elTot = document.getElementById('sideDsTotal');
+                const elLab = document.getElementById('sideDsLabeled');
+                const elUnlab = document.getElementById('sideDsUnlabeled');
+                const elDev = document.getElementById('sideDsDevice');
+                if (elTot) elTot.textContent = data.total;
+                if (elLab) elLab.textContent = data.labeled;
+                if (elUnlab) elUnlab.textContent = data.unlabeled;
+                if (elDev) elDev.textContent = data.device;
+            } catch (e) {
+                console.error("fetchSideStats error:", e);
+            }
+        }
+
+        async function fetchSideImages() {
+            try {
+                const res = await fetch('/api/origin3/annotation/images');
+                const data = await res.json();
+                sideImagesList = data.images || [];
+
+                const countAll = sideImagesList.length;
+                const countLab = sideImagesList.filter(i => i.labeled).length;
+                const countUnlab = countAll - countLab;
+
+                const elAll = document.getElementById('sideCountAll');
+                const elLab = document.getElementById('sideCountLabeled');
+                const elUnlab = document.getElementById('sideCountUnlabeled');
+                if (elAll) elAll.textContent = countAll;
+                if (elLab) elLab.textContent = countLab;
+                if (elUnlab) elUnlab.textContent = countUnlab;
+
+                renderSideImagesList();
+
+                if (!sideCurrentImgName && sideImagesList.length > 0) {
+                    loadSideImage(sideImagesList[0].name);
+                }
+            } catch (err) {
+                console.error("fetchSideImages error:", err);
+            }
+        }
+
+        function setSideFilter(filter) {
+            sideCurrentFilter = filter;
+            ['all', 'labeled', 'unlabeled'].forEach(f => {
+                const btn = document.getElementById('sideFilterBtn' + f.charAt(0).toUpperCase() + f.slice(1));
+                if (btn) btn.classList.toggle('active', f === filter);
+            });
+            renderSideImagesList();
+        }
+
+        function renderSideImagesList() {
+            const container = document.getElementById('sideImageList');
+            if (!container) return;
+            container.innerHTML = '';
+
+            let filtered = sideImagesList;
+            if (sideCurrentFilter === 'labeled') {
+                filtered = sideImagesList.filter(i => i.labeled);
+            } else if (sideCurrentFilter === 'unlabeled') {
+                filtered = sideImagesList.filter(i => !i.labeled);
+            }
+
+            if (filtered.length === 0) {
+                container.innerHTML = '<div style="color:#64748b; font-size:0.75rem; padding:8px; text-align:center;">No images found in filter</div>';
+                return;
+            }
+
+            filtered.forEach(img => {
+                const row = document.createElement('div');
+                row.className = 'image-item-row ' + (img.name === sideCurrentImgName ? 'active' : '');
+                if (img.name === sideCurrentImgName) {
+                    row.style.borderColor = '#0284c7';
+                    row.style.background = 'rgba(2, 132, 199, 0.15)';
+                }
+                row.innerHTML = `
+                    <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:130px; font-size:0.75rem;" title="${img.name}">${img.name}</span>
+                    <div style="display:flex; align-items:center; gap:6px;">
+                        <span style="font-size:0.68rem; font-weight:700; color:${img.labeled ? '#34d399' : '#f59e0b'};">
+                            ${img.labeled ? '✔ Box' : '○ Empty'}
+                        </span>
+                        <button class="tool-btn" style="padding:2px 5px; font-size:0.68rem; color:#f87171; background:transparent; border-color:transparent;" title="Delete Image" onclick="event.stopPropagation(); deleteSideImage('${img.name}')">🗑️</button>
+                    </div>
+                `;
+                row.onclick = () => loadSideImage(img.name);
+                container.appendChild(row);
+            });
+        }
+
+        async function loadSideImage(imgName) {
+            sideCurrentImgName = imgName;
+            const badge = document.getElementById('sideCurrentImgBadge');
+            if (badge) badge.textContent = imgName;
+
+            try {
+                const res = await fetch('/api/origin3/annotation/image_data?file=' + encodeURIComponent(imgName));
+                const data = await res.json();
+                if (data.success) {
+                    const img = new Image();
+                    img.onload = () => {
+                        sideCurrentImgLoaded = img;
+                        sideImgOrigW = data.width || img.naturalWidth;
+                        sideImgOrigH = data.height || img.naturalHeight;
+                        if (sideCanvas) {
+                            sideCanvas.width = sideImgOrigW;
+                            sideCanvas.height = sideImgOrigH;
+                        }
+                        sideBBox = data.bbox || null;
+                        if (badge) badge.textContent = `${imgName} (${sideImgOrigW}×${sideImgOrigH})`;
+                        updateSideBoxDetails();
+                        redrawSideCanvas();
+                    };
+                    img.src = data.image_base64;
+                    renderSideImagesList();
+                }
+            } catch (e) {
+                console.error("loadSideImage error:", e);
+            }
+        }
+
+        function updateSideBoxDetails() {
+            const badge = document.getElementById('sideBoxBadge');
+            const coords = document.getElementById('sideBoxCoords');
+            if (!sideBBox) {
+                if (badge) {
+                    badge.textContent = 'None';
+                    badge.style.color = '#94a3b8';
+                    badge.style.borderColor = 'rgba(148, 163, 184, 0.4)';
+                    badge.style.background = 'rgba(148, 163, 184, 0.1)';
+                }
+                if (coords) coords.textContent = 'No box defined yet. Drag across Origin 3 on canvas.';
+            } else {
+                const [x1, y1, x2, y2] = sideBBox;
+                const w = x2 - x1;
+                const h = y2 - y1;
+                const cx = Math.round(x1 + w / 2);
+                const cy = Math.round(y1 + h / 2);
+                if (badge) {
+                    badge.textContent = '1 Box Defined';
+                    badge.style.color = '#38bdf8';
+                    badge.style.borderColor = 'rgba(6, 182, 212, 0.4)';
+                    badge.style.background = 'rgba(6, 182, 212, 0.2)';
+                }
+                if (coords) {
+                    coords.innerHTML = `<b>origin_3</b> [${x1}, ${y1}, ${x2}, ${y2}] &bull; Center: (${cx}, ${cy}) &bull; Size: ${w}×${h} px`;
+                }
+            }
+        }
+
+        function redrawSideCanvas() {
+            if (!sideCanvas || !ctxSide || !sideCurrentImgLoaded) return;
+            ctxSide.clearRect(0, 0, sideCanvas.width, sideCanvas.height);
+            ctxSide.drawImage(sideCurrentImgLoaded, 0, 0, sideCanvas.width, sideCanvas.height);
+
+            // Draw dragging preview
+            if (sideIsDrawing) {
+                const x1 = Math.min(sideDrawStartX, sideDrawCurX);
+                const y1 = Math.min(sideDrawStartY, sideDrawCurY);
+                const w = Math.max(sideDrawStartX, sideDrawCurX) - x1;
+                const h = Math.max(sideDrawStartY, sideDrawCurY) - y1;
+
+                ctxSide.fillStyle = 'rgba(6, 182, 212, 0.18)';
+                ctxSide.fillRect(x1, y1, w, h);
+                ctxSide.strokeStyle = '#06b6d4';
+                ctxSide.lineWidth = 2.5;
+                ctxSide.setLineDash([6, 4]);
+                ctxSide.strokeRect(x1, y1, w, h);
+                ctxSide.setLineDash([]);
+                return;
+            }
+
+            // Draw finalized box
+            if (sideBBox) {
+                const [x1, y1, x2, y2] = sideBBox;
+                const w = x2 - x1;
+                const h = y2 - y1;
+                const cx = Math.round(x1 + w / 2);
+                const cy = Math.round(y1 + h / 2);
+
+                ctxSide.fillStyle = 'rgba(6, 182, 212, 0.22)';
+                ctxSide.fillRect(x1, y1, w, h);
+
+                ctxSide.strokeStyle = '#06b6d4';
+                ctxSide.lineWidth = 3;
+                ctxSide.strokeRect(x1, y1, w, h);
+
+                ctxSide.strokeStyle = '#facc15';
+                ctxSide.lineWidth = 2;
+                ctxSide.beginPath();
+                ctxSide.moveTo(cx - 10, cy);
+                ctxSide.lineTo(cx + 10, cy);
+                ctxSide.moveTo(cx, cy - 10);
+                ctxSide.lineTo(cx, cy + 10);
+                ctxSide.stroke();
+
+                const gripSize = 8;
+                ctxSide.fillStyle = '#ffffff';
+                ctxSide.strokeStyle = '#06b6d4';
+                ctxSide.lineWidth = 1.5;
+                const grips = [
+                    [x1, y1], [x2, y1], [x1, y2], [x2, y2],
+                    [cx, y1], [cx, y2], [x1, cy], [x2, cy]
+                ];
+                grips.forEach(([gx, gy]) => {
+                    ctxSide.fillRect(gx - gripSize / 2, gy - gripSize / 2, gripSize, gripSize);
+                    ctxSide.strokeRect(gx - gripSize / 2, gy - gripSize / 2, gripSize, gripSize);
+                });
+
+                const labelText = "origin_3";
+                ctxSide.font = "bold 13px sans-serif";
+                const textWidth = ctxSide.measureText(labelText).width;
+                const badgeHeight = 22;
+                const badgeWidth = textWidth + 16;
+                const badgeY = Math.max(0, y1 - badgeHeight);
+
+                ctxSide.fillStyle = "#06b6d4";
+                ctxSide.fillRect(x1, badgeY, badgeWidth, badgeHeight);
+                ctxSide.fillStyle = "#04151f";
+                ctxSide.fillText(labelText, x1 + 8, badgeY + 16);
+            }
+        }
+
+        if (sideCanvas) {
+            sideCanvas.addEventListener('mousedown', (e) => {
+                if (!sideCurrentImgLoaded) return;
+                const rect = sideCanvas.getBoundingClientRect();
+                const scaleX = sideCanvas.width / rect.width;
+                const scaleY = sideCanvas.height / rect.height;
+
+                sideDrawStartX = Math.max(0, Math.min(sideCanvas.width, Math.round((e.clientX - rect.left) * scaleX)));
+                sideDrawStartY = Math.max(0, Math.min(sideCanvas.height, Math.round((e.clientY - rect.top) * scaleY)));
+                sideDrawCurX = sideDrawStartX;
+                sideDrawCurY = sideDrawStartY;
+                sideIsDrawing = true;
+            });
+
+            window.addEventListener('mousemove', (e) => {
+                if (!sideIsDrawing || !sideCanvas) return;
+                const rect = sideCanvas.getBoundingClientRect();
+                const scaleX = sideCanvas.width / rect.width;
+                const scaleY = sideCanvas.height / rect.height;
+
+                sideDrawCurX = Math.max(0, Math.min(sideCanvas.width, Math.round((e.clientX - rect.left) * scaleX)));
+                sideDrawCurY = Math.max(0, Math.min(sideCanvas.height, Math.round((e.clientY - rect.top) * scaleY)));
+                redrawSideCanvas();
+            });
+
+            window.addEventListener('mouseup', (e) => {
+                if (!sideIsDrawing) return;
+                sideIsDrawing = false;
+                const x1 = Math.min(sideDrawStartX, sideDrawCurX);
+                const y1 = Math.min(sideDrawStartY, sideDrawCurY);
+                const x2 = Math.max(sideDrawStartX, sideDrawCurX);
+                const y2 = Math.max(sideDrawStartY, sideDrawCurY);
+
+                if ((x2 - x1) > 8 && (y2 - y1) > 8) {
+                    sideBBox = [x1, y1, x2, y2];
+                    updateSideBoxDetails();
+                }
+                redrawSideCanvas();
+            });
+        }
+
+        function clearSideBox() {
+            sideBBox = null;
+            updateSideBoxDetails();
+            redrawSideCanvas();
+        }
+
+        async function sidePreAnnotate() {
+            if (!sideCurrentImgName) return alert("Please select an image first.");
+            const statusEl = document.getElementById('sideCanvasStatus');
+            if (statusEl) statusEl.textContent = "🤖 Running Origin 3 Auto-Detection...";
+            try {
+                const res = await fetch('/api/origin3/annotation/pre_annotate', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ image_name: sideCurrentImgName })
+                });
+                const data = await res.json();
+                if (data.success && data.bbox) {
+                    sideBBox = data.bbox.map(v => Math.round(v));
+                    updateSideBoxDetails();
+                    redrawSideCanvas();
+                    if (statusEl) statusEl.textContent = `Target: Origin 3 • Auto-Detected (${(data.confidence*100).toFixed(1)}%)`;
+                    alert(`🤖 Origin 3 auto-detected with ${(data.confidence * 100).toFixed(1)}% confidence!\nClick 'Save Annotation' to confirm.`);
+                } else {
+                    if (statusEl) statusEl.textContent = "Target: Origin 3 • Drag to Draw Box";
+                    alert(data.error || "Origin 3 not detected automatically. Please draw the box manually.");
+                }
+            } catch (err) {
+                if (statusEl) statusEl.textContent = "Target: Origin 3 • Drag to Draw Box";
+                alert("Auto-detect failed: " + err.message);
+            }
+        }
+
+        async function saveSideAnnotation() {
+            if (!sideCurrentImgName) return alert("No image loaded to save.");
+            if (!sideBBox) {
+                if (!confirm("Save this image with NO bounding box (empty label)?")) return;
+            }
+
+            try {
+                const res = await fetch('/api/origin3/annotation/save', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        image_name: sideCurrentImgName,
+                        width: sideImgOrigW,
+                        height: sideImgOrigH,
+                        bbox: sideBBox
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    alert("✔ Origin 3 annotation saved successfully!");
+                    await fetchSideImages();
+                    await fetchSideStats();
+                } else {
+                    alert("Save error: " + data.error);
+                }
+            } catch (e) {
+                console.error("saveSideAnnotation error:", e);
+            }
+        }
+
+        function handleSideUpload(e) {
+            const files = Array.from(e.target.files);
+            if (!files.length) return;
+            const formData = new FormData();
+            files.forEach(f => formData.append('files', f));
+
+            fetch('/api/origin3/annotation/upload', {
+                method: 'POST',
+                body: formData
+            }).then(r => r.json()).then(async data => {
+                if (data.success) {
+                    await fetchSideImages();
+                    await fetchSideStats();
+                    if (data.first_image) loadSideImage(data.first_image);
+                }
+            }).catch(err => console.error("Side upload failed:", err));
+        }
+
+        async function snapSideCamera() {
+            const cam = (webcam2 && webcam2.videoWidth) ? webcam2 : ((webcam1 && webcam1.videoWidth) ? webcam1 : null);
+            if (!cam) {
+                alert("Please start the cameras in the Inspection Station first.");
+                return;
+            }
+            const canvas = document.getElementById('captureCanvas');
+            canvas.width = cam.videoWidth;
+            canvas.height = cam.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(cam, 0, 0, canvas.width, canvas.height);
+            const b64 = canvas.toDataURL('image/jpeg', 0.92);
+
+            const name = `side_snap_${Date.now()}.jpg`;
+            const res = await fetch('/api/origin3/annotation/upload_base64', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name, image_base64: b64 })
+            });
+            const data = await res.json();
+            if (data.success) {
+                await fetchSideImages();
+                await fetchSideStats();
+                loadSideImage(name);
+            }
+        }
+
+        async function deleteSideImage(imgName) {
+            if (!confirm(`Are you sure you want to delete "${imgName}"?`)) return;
+            try {
+                const res = await fetch('/api/origin3/annotation/delete_image', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ image_name: imgName })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    if (sideCurrentImgName === imgName) {
+                        sideCurrentImgName = "";
+                        sideCurrentImgLoaded = null;
+                        sideBBox = null;
+                        if (sideCanvas && ctxSide) ctxSide.clearRect(0, 0, sideCanvas.width, sideCanvas.height);
+                        updateSideBoxDetails();
+                        const badge = document.getElementById('sideCurrentImgBadge');
+                        if (badge) badge.textContent = 'No image loaded';
+                    }
+                    await fetchSideImages();
+                    await fetchSideStats();
+                } else {
+                    alert("Delete failed: " + (data.error || "Unknown error"));
+                }
+            } catch (err) {
+                console.error("Delete error:", err);
+            }
+        }
+
+        function deleteCurrentSideImage() {
+            if (!sideCurrentImgName) return alert("No image loaded to delete.");
+            deleteSideImage(sideCurrentImgName);
+        }
+
+        function toggleFullscreenSideAnnotation() {
+            const card = document.getElementById('sideCenterCard');
+            isFullscreenSideAnno = !isFullscreenSideAnno;
+
+            if (isFullscreenSideAnno) {
+                card.classList.add('canvas-card-fullscreen');
+                const btn = document.getElementById('btnToggleSideFs');
+                if (btn) {
+                    btn.innerHTML = '✕ Exit Fullscreen';
+                    btn.style.background = '#e11d48';
+                }
+                if (document.documentElement.requestFullscreen) {
+                    document.documentElement.requestFullscreen().catch(() => {});
+                }
+            } else {
+                card.classList.remove('canvas-card-fullscreen');
+                const btn = document.getElementById('btnToggleSideFs');
+                if (btn) {
+                    btn.innerHTML = '⛶ Fullscreen';
+                    btn.style.background = '#273549';
+                }
+                if (document.exitFullscreen && document.fullscreenElement) {
+                    document.exitFullscreen().catch(() => {});
+                }
+            }
+
+            setTimeout(() => {
+                redrawSideCanvas();
+            }, 80);
+        }
+
+        async function startSideRetraining() {
+            const epochs = parseInt(document.getElementById('sideTrainEpochsInput').value) || 30;
+            const batch = parseInt(document.getElementById('sideTrainBatchInput').value) || 8;
+            const weights = document.getElementById('sideTrainWeightsSelect').value;
+
+            if (!confirm(`Start retraining YOLOv8 Origin 3 Side Model with ${epochs} epochs and batch size ${batch}?`)) return;
+
+            const btn = document.getElementById('btnStartSideTrain');
+            btn.disabled = true;
+            btn.textContent = "Training In Progress...";
+
+            try {
+                const res = await fetch('/api/origin3/train/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ epochs, batch_size: batch, weights_choice: weights })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    pollSideTrainingStatus();
+                } else {
+                    alert(data.error || "Could not start Origin 3 training");
+                    btn.disabled = false;
+                    btn.textContent = "🚀 Retrain Side Model (Origin 3)";
+                }
+            } catch (e) {
+                console.error(e);
+                btn.disabled = false;
+                btn.textContent = "🚀 Retrain Side Model (Origin 3)";
+            }
+        }
+
+        function pollSideTrainingStatus() {
+            const interval = setInterval(async () => {
+                try {
+                    const res = await fetch('/api/origin3/train/status');
+                    const data = await res.json();
+
+                    const badge = document.getElementById('sideTrainStatusBadge');
+                    if (badge) badge.textContent = data.status.toUpperCase();
+                    const bar = document.getElementById('sideTrainProgressBar');
+                    if (bar) bar.style.width = data.progress_percent + '%';
+                    const txt = document.getElementById('sideTrainProgressText');
+                    if (txt) txt.textContent = data.progress_percent + '%';
+
+                    const consoleBox = document.getElementById('sideTrainConsole');
+                    if (consoleBox && data.logs) {
+                        consoleBox.textContent = data.logs.join('\\n');
+                        consoleBox.scrollTop = consoleBox.scrollHeight;
+                    }
+
+                    if (data.status === 'completed' || data.status === 'error' || data.status === 'idle') {
+                        clearInterval(interval);
+                        const btn = document.getElementById('btnStartSideTrain');
+                        if (btn) {
+                            btn.disabled = false;
+                            btn.textContent = "🚀 Retrain Side Model (Origin 3)";
+                        }
+                        if (data.status === 'completed') {
+                            alert("🎉 Origin 3 Side Model retrained successfully!\\nUpdated weights hot-reloaded into the Dual Inspection Engine.");
+                            fetchSideStats();
+                        }
+                    }
+                } catch (e) {
+                    clearInterval(interval);
+                }
+            }, 1500);
+        }
+
         // Init
         window.addEventListener('DOMContentLoaded', () => {
             initCameras();
@@ -3588,6 +4529,222 @@ def api_train_status():
         "progress_percent": training_mgr.progress_percent,
         "logs": training_mgr.logs[-50:],
         "error": training_mgr.error_msg
+    })
+
+# ================= ORIGIN 3 SIDE MODEL ROUTES =================
+@app.route("/api/origin3/annotation/images", methods=["GET"])
+def api_origin3_images():
+    images = []
+    if os.path.exists(ORIGIN3_IMAGES_DIR):
+        for f in sorted(os.listdir(ORIGIN3_IMAGES_DIR)):
+            if f.lower().endswith((".jpg", ".png", ".jpeg")):
+                stem = os.path.splitext(f)[0]
+                lbl_path = os.path.join(ORIGIN3_LABELS_DIR, f"{stem}.txt")
+                labeled = False
+                box_count = 0
+                if os.path.exists(lbl_path) and os.path.getsize(lbl_path) > 0:
+                    with open(lbl_path, "r", encoding="utf-8") as fp:
+                        lines = [l.strip() for l in fp if l.strip()]
+                        box_count = len(lines)
+                        labeled = box_count > 0
+                images.append({"name": f, "labeled": labeled, "box_count": box_count})
+    return jsonify({"images": images})
+
+@app.route("/api/origin3/annotation/upload", methods=["POST"])
+def api_origin3_upload():
+    files = request.files.getlist("files")
+    first_name = ""
+    for f in files:
+        if f.filename:
+            safe_name = os.path.basename(f.filename)
+            path = os.path.join(ORIGIN3_IMAGES_DIR, safe_name)
+            f.save(path)
+            if not first_name:
+                first_name = safe_name
+    return jsonify({"success": True, "first_image": first_name})
+
+@app.route("/api/origin3/annotation/upload_base64", methods=["POST"])
+def api_origin3_upload_base64():
+    data = request.get_json(silent=True) or {}
+    name = data.get("name", f"snap_side_{int(time.time())}.jpg")
+    safe_name = os.path.basename(name)
+    b64_str = data.get("image_base64", "")
+    if "," in b64_str:
+        b64_str = b64_str.split(",")[1]
+    raw_bytes = base64.b64decode(b64_str)
+    with open(os.path.join(ORIGIN3_IMAGES_DIR, safe_name), "wb") as fp:
+        fp.write(raw_bytes)
+    return jsonify({"success": True, "name": safe_name})
+
+@app.route("/api/origin3/annotation/image_data", methods=["GET"])
+def api_origin3_image_data():
+    img_name = request.args.get("file", "")
+    if not img_name:
+        return jsonify({"success": False, "error": "file param missing"}), 400
+    safe_name = os.path.basename(img_name)
+    img_path = os.path.join(ORIGIN3_IMAGES_DIR, safe_name)
+    if not os.path.exists(img_path):
+        return jsonify({"success": False, "error": "Image file not found"}), 404
+
+    img = cv2.imread(img_path)
+    if img is None:
+        return jsonify({"success": False, "error": "Cannot load image"}), 400
+
+    h, w = img.shape[:2]
+    b64 = cv2_to_base64(img)
+
+    bbox = None
+    stem = os.path.splitext(safe_name)[0]
+    lbl_path = os.path.join(ORIGIN3_LABELS_DIR, f"{stem}.txt")
+    if os.path.exists(lbl_path):
+        with open(lbl_path, "r", encoding="utf-8") as fp:
+            for line in fp:
+                parts = line.strip().split()
+                if len(parts) >= 5:
+                    xc, yc, bw, bh = map(float, parts[1:5])
+                    x1 = max(0, int(round((xc - bw / 2.0) * w)))
+                    y1 = max(0, int(round((yc - bh / 2.0) * h)))
+                    x2 = min(w, int(round((xc + bw / 2.0) * w)))
+                    y2 = min(h, int(round((yc + bh / 2.0) * h)))
+                    bbox = [x1, y1, x2, y2]
+                    break
+
+    return jsonify({"success": True, "image_base64": b64, "width": w, "height": h, "bbox": bbox})
+
+@app.route("/api/origin3/annotation/save", methods=["POST"])
+def api_origin3_save():
+    data = request.get_json(silent=True) or {}
+    img_name = data.get("image_name", "")
+    safe_name = os.path.basename(img_name)
+    w = int(data.get("width", 1280))
+    h = int(data.get("height", 720))
+    bbox = data.get("bbox", None)
+
+    stem = os.path.splitext(safe_name)[0]
+    lbl_path = os.path.join(ORIGIN3_LABELS_DIR, f"{stem}.txt")
+
+    if bbox and len(bbox) == 4:
+        x1, y1, x2, y2 = bbox
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w, x2), min(h, y2)
+        bw = x2 - x1
+        bh = y2 - y1
+        if bw > 0 and bh > 0:
+            xc = (x1 + x2) / (2.0 * w)
+            yc = (y1 + y2) / (2.0 * h)
+            norm_w = bw / float(w)
+            norm_h = bh / float(h)
+            with open(lbl_path, "w", encoding="utf-8") as fp:
+                fp.write(f"0 {xc:.6f} {yc:.6f} {norm_w:.6f} {norm_h:.6f}\n")
+            return jsonify({"success": True, "saved_file": lbl_path, "has_box": True})
+
+    if os.path.exists(lbl_path):
+        try:
+            os.remove(lbl_path)
+        except Exception:
+            pass
+    return jsonify({"success": True, "saved_file": lbl_path, "has_box": False})
+
+@app.route("/api/origin3/annotation/delete_image", methods=["POST"])
+def api_origin3_delete_image():
+    data = request.get_json(silent=True) or {}
+    img_name = data.get("image_name", "").strip()
+    safe_name = os.path.basename(img_name)
+    stem = os.path.splitext(safe_name)[0]
+
+    img_p = os.path.join(ORIGIN3_IMAGES_DIR, safe_name)
+    lbl_p = os.path.join(ORIGIN3_LABELS_DIR, f"{stem}.txt")
+
+    deleted = False
+    if os.path.exists(img_p):
+        try:
+            os.remove(img_p)
+            deleted = True
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 500
+
+    if os.path.exists(lbl_p):
+        try:
+            os.remove(lbl_p)
+        except Exception:
+            pass
+
+    return jsonify({"success": True, "deleted": safe_name, "found": deleted})
+
+@app.route("/api/origin3/annotation/pre_annotate", methods=["POST"])
+def api_origin3_pre_annotate():
+    data = request.get_json(silent=True) or {}
+    img_name = data.get("image_name", "")
+    safe_name = os.path.basename(img_name)
+    img_path = os.path.join(ORIGIN3_IMAGES_DIR, safe_name)
+    if not os.path.exists(img_path):
+        return jsonify({"success": False, "error": "Image file not found"}), 404
+
+    try:
+        model = get_origin3_model()
+        img = cv2.imread(img_path)
+        if img is None:
+            return jsonify({"success": False, "error": "Cannot read image"}), 400
+
+        res = inspect_origin3(model, img, conf=0.25)
+        if res.get("is_pass") and res.get("bbox"):
+            return jsonify({
+                "success": True,
+                "bbox": res["bbox"],
+                "confidence": res.get("confidence", 0.0),
+                "center": res.get("center", None)
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Origin 3 not detected with confidence threshold (>= 0.25). Please annotate manually."
+            })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/origin3/dataset/stats", methods=["GET"])
+def api_origin3_stats():
+    total = 0
+    labeled = 0
+    if os.path.exists(ORIGIN3_IMAGES_DIR):
+        for f in os.listdir(ORIGIN3_IMAGES_DIR):
+            if f.lower().endswith((".jpg", ".png", ".jpeg")):
+                total += 1
+                stem = os.path.splitext(f)[0]
+                lbl_path = os.path.join(ORIGIN3_LABELS_DIR, f"{stem}.txt")
+                if os.path.exists(lbl_path) and os.path.getsize(lbl_path) > 0:
+                    labeled += 1
+    unlabeled = max(0, total - labeled)
+    import torch
+    device = "GPU (CUDA)" if torch.cuda.is_available() else "CPU (Optimized)"
+    return jsonify({
+        "total": total,
+        "labeled": labeled,
+        "unlabeled": unlabeled,
+        "device": device
+    })
+
+@app.route("/api/origin3/train/start", methods=["POST"])
+def api_origin3_train_start():
+    data = request.get_json(silent=True) or {}
+    epochs = int(data.get("epochs", 30))
+    batch = int(data.get("batch_size", 8))
+    weights = data.get("weights_choice", "best")
+
+    success, msg = origin3_training_mgr.start(epochs=epochs, batch=batch, weights_choice=weights)
+    if success:
+        return jsonify({"success": True, "message": msg})
+    return jsonify({"success": False, "error": msg}), 400
+
+@app.route("/api/origin3/train/status", methods=["GET"])
+def api_origin3_train_status():
+    return jsonify({
+        "status": origin3_training_mgr.status,
+        "current_epoch": origin3_training_mgr.current_epoch,
+        "total_epochs": origin3_training_mgr.total_epochs,
+        "progress_percent": origin3_training_mgr.progress_percent,
+        "logs": origin3_training_mgr.logs[-50:],
+        "error": origin3_training_mgr.error_msg
     })
 
 def open_browser(port):
