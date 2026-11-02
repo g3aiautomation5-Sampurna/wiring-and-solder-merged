@@ -480,6 +480,20 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
                 }
             }
         }
+
+        // ==========================================
+        // STOP MERGED UTILITY WHEN LEAVING
+        // ==========================================
+
+        window.addEventListener('pagehide', function () {
+
+            console.log("Leaving Vision Quality Inspection Suite.");
+
+            navigator.sendBeacon(
+                "http://127.0.0.1:8000/api/pcb/shutdown"
+            );
+
+        });
     </script>
 </body>
 </html>

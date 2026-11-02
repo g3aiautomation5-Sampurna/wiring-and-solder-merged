@@ -566,15 +566,13 @@ HTML_TEMPLATE = """
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }
 
-        html, body {
+        body {
             background-color: var(--bg-main);
             color: var(--text-main);
             min-height: 100vh;
             display: flex;
             flex-direction: column;
             overflow-x: hidden;
-            max-width: 100vw;
-            box-sizing: border-box;
         }
 
         /* Top Header */
@@ -685,15 +683,14 @@ HTML_TEMPLATE = """
         .main-view {
             flex: 1;
             display: none;
-            padding: 12px 16px;
-            max-width: 100%;
+            padding: 10px 14px;
             box-sizing: border-box;
+            max-width: 100%;
             overflow-x: hidden;
         }
 
         .main-view.active {
             display: flex;
-            width: 100%;
         }
 
         /* ================= 1. INSPECTION VIEW ================= */
@@ -1336,14 +1333,15 @@ HTML_TEMPLATE = """
 
         .studio-workspace {
             display: grid;
-            grid-template-columns: 260px minmax(0, 1fr) 310px;
+            grid-template-columns: 240px minmax(0, 1fr) 280px;
             gap: 12px;
             width: 100%;
             max-width: 100%;
             box-sizing: border-box;
+            align-items: start;
         }
 
-        @media (max-width: 1080px) {
+        @media (max-width: 1100px) {
             .studio-workspace {
                 grid-template-columns: 1fr;
             }
@@ -1353,11 +1351,12 @@ HTML_TEMPLATE = """
             background: var(--bg-panel);
             border: 1px solid var(--border);
             border-radius: 8px;
-            padding: 12px;
+            padding: 10px 12px;
             display: flex;
             flex-direction: column;
             gap: 10px;
             min-width: 0;
+            max-width: 100%;
             overflow: hidden;
             box-sizing: border-box;
         }
@@ -1428,9 +1427,8 @@ HTML_TEMPLATE = """
 
         /* Image Explorer list */
         .image-list-box {
-            max-height: 440px;
+            max-height: 380px;
             overflow-y: auto;
-            overflow-x: hidden;
             display: flex;
             flex-direction: column;
             gap: 6px;
@@ -1463,7 +1461,7 @@ HTML_TEMPLATE = """
             justify-content: center;
             overflow: hidden;
             min-height: 280px;
-            max-height: 52vh;
+            max-height: calc(100vh - 230px);
             width: 100%;
             max-width: 100%;
             box-sizing: border-box;
@@ -2331,7 +2329,7 @@ HTML_TEMPLATE = """
                                 None
                             </span>
                         </div>
-                        <span id="sideBoxCoords" style="color: #64748b; font-size: 0.75rem; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        <span id="sideBoxCoords" style="color: #64748b; font-size: 0.75rem; font-family: monospace;">
                             No box drawn yet. Drag rectangle across Origin 3.
                         </span>
                     </div>
