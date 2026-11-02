@@ -566,12 +566,15 @@ HTML_TEMPLATE = """
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }
 
-        body {
+        html, body {
             background-color: var(--bg-main);
             color: var(--text-main);
             min-height: 100vh;
             display: flex;
             flex-direction: column;
+            overflow-x: hidden;
+            max-width: 100vw;
+            box-sizing: border-box;
         }
 
         /* Top Header */
@@ -682,11 +685,15 @@ HTML_TEMPLATE = """
         .main-view {
             flex: 1;
             display: none;
-            padding: 16px 20px;
+            padding: 12px 16px;
+            max-width: 100%;
+            box-sizing: border-box;
+            overflow-x: hidden;
         }
 
         .main-view.active {
             display: flex;
+            width: 100%;
         }
 
         /* ================= 1. INSPECTION VIEW ================= */
@@ -1329,12 +1336,14 @@ HTML_TEMPLATE = """
 
         .studio-workspace {
             display: grid;
-            grid-template-columns: 280px 1fr 340px;
-            gap: 16px;
+            grid-template-columns: 260px minmax(0, 1fr) 310px;
+            gap: 12px;
             width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
         }
 
-        @media (max-width: 1200px) {
+        @media (max-width: 1080px) {
             .studio-workspace {
                 grid-template-columns: 1fr;
             }
@@ -1344,10 +1353,13 @@ HTML_TEMPLATE = """
             background: var(--bg-panel);
             border: 1px solid var(--border);
             border-radius: 8px;
-            padding: 14px;
+            padding: 12px;
             display: flex;
             flex-direction: column;
-            gap: 12px;
+            gap: 10px;
+            min-width: 0;
+            overflow: hidden;
+            box-sizing: border-box;
         }
 
         .card-header-title {
@@ -1416,8 +1428,9 @@ HTML_TEMPLATE = """
 
         /* Image Explorer list */
         .image-list-box {
-            max-height: 480px;
+            max-height: 440px;
             overflow-y: auto;
+            overflow-x: hidden;
             display: flex;
             flex-direction: column;
             gap: 6px;
@@ -1449,10 +1462,14 @@ HTML_TEMPLATE = """
             align-items: center;
             justify-content: center;
             overflow: hidden;
-            min-height: 520px;
+            min-height: 280px;
+            max-height: 52vh;
+            width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
         }
 
-        #annoCanvas {
+        #annoCanvas, #sideCanvas {
             max-width: 100%;
             max-height: 100%;
             width: auto;
@@ -1663,7 +1680,8 @@ HTML_TEMPLATE = """
             box-sizing: border-box !important;
         }
 
-        .canvas-card-fullscreen .canvas-container #annoCanvas {
+        .canvas-card-fullscreen .canvas-container #annoCanvas,
+        .canvas-card-fullscreen .canvas-container #sideCanvas {
             max-width: 100% !important;
             max-height: 100% !important;
             width: auto !important;
@@ -2313,7 +2331,7 @@ HTML_TEMPLATE = """
                                 None
                             </span>
                         </div>
-                        <span id="sideBoxCoords" style="color: #64748b; font-size: 0.75rem; font-family: monospace;">
+                        <span id="sideBoxCoords" style="color: #64748b; font-size: 0.75rem; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
                             No box drawn yet. Drag rectangle across Origin 3.
                         </span>
                     </div>
