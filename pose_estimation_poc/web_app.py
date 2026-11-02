@@ -37,7 +37,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_YAML_PATH = os.path.join(SCRIPT_DIR, "data.yaml")
 COLORS_PATH = os.path.join(SCRIPT_DIR, "class_colors.json")
 
-# Origin 3 Side Model dataset paths
+# Default Origin 3 Side Model dataset paths
 ORIGIN3_DATASET_DIR = os.path.join(SCRIPT_DIR, "origin3_dataset")
 ORIGIN3_IMAGES_DIR = os.path.join(ORIGIN3_DATASET_DIR, "images")
 ORIGIN3_LABELS_DIR = os.path.join(ORIGIN3_DATASET_DIR, "labels")
@@ -45,6 +45,251 @@ ORIGIN3_YOLO_DIR = os.path.join(ORIGIN3_DATASET_DIR, "yolo_dataset")
 ORIGIN3_YAML_PATH = os.path.join(ORIGIN3_YOLO_DIR, "data.yaml")
 os.makedirs(ORIGIN3_IMAGES_DIR, exist_ok=True)
 os.makedirs(ORIGIN3_LABELS_DIR, exist_ok=True)
+
+# ----------------- PROJECT MANAGEMENT DIRECTORIES & STATE -----------------
+TOP_PROJECTS_DIR = os.path.join(SCRIPT_DIR, "projects_top_pose")
+ACTIVE_TOP_PROJECT_ID = "default"
+os.makedirs(TOP_PROJECTS_DIR, exist_ok=True)
+
+SIDE_PROJECTS_DIR = os.path.join(SCRIPT_DIR, "projects_side_detection")
+ACTIVE_SIDE_PROJECT_ID = "default"
+os.makedirs(SIDE_PROJECTS_DIR, exist_ok=True)
+
+
+def get_top_paths(project_id=None):
+    pid = project_id or ACTIVE_TOP_PROJECT_ID
+    if pid == "default":
+        return {
+            "id": "default",
+            "is_default": True,
+            "proj_dir": SCRIPT_DIR,
+            "dataset_dir": os.path.join(SCRIPT_DIR, "dataset"),
+            "yaml_path": DATA_YAML_PATH,
+            "colors_path": COLORS_PATH,
+            "images_raw": os.path.join(SCRIPT_DIR, "dataset", "images", "raw"),
+            "images_train": os.path.join(SCRIPT_DIR, "dataset", "images", "train"),
+            "images_val": os.path.join(SCRIPT_DIR, "dataset", "images", "val"),
+            "labels_train": os.path.join(SCRIPT_DIR, "dataset", "labels", "train"),
+            "labels_val": os.path.join(SCRIPT_DIR, "dataset", "labels", "val"),
+            "runs_dir": os.path.join(SCRIPT_DIR, "runs"),
+            "best_weights": os.path.join(SCRIPT_DIR, "runs", "wire_pose_model", "weights", "best.pt")
+        }
+    proj_dir = os.path.join(TOP_PROJECTS_DIR, pid)
+    dataset_dir = os.path.join(proj_dir, "dataset")
+    return {
+        "id": pid,
+        "is_default": False,
+        "proj_dir": proj_dir,
+        "dataset_dir": dataset_dir,
+        "yaml_path": os.path.join(proj_dir, "data.yaml"),
+        "colors_path": os.path.join(proj_dir, "class_colors.json"),
+        "images_raw": os.path.join(dataset_dir, "images", "raw"),
+        "images_train": os.path.join(dataset_dir, "images", "train"),
+        "images_val": os.path.join(dataset_dir, "images", "val"),
+        "labels_train": os.path.join(dataset_dir, "labels", "train"),
+        "labels_val": os.path.join(dataset_dir, "labels", "val"),
+        "runs_dir": os.path.join(proj_dir, "runs"),
+        "best_weights": os.path.join(proj_dir, "runs", "wire_pose_model", "weights", "best.pt")
+    }
+
+
+def list_top_projects():
+    projects = []
+    def_paths = get_top_paths("default")
+    def_cnt = 0
+    for sub in ["train", "val", "raw"]:
+        d = os.path.join(def_paths["dataset_dir"], "images", sub)
+        if os.path.exists(d):
+            def_cnt += len([f for f in os.listdir(d) if f.lower().endswith((".jpg", ".png", ".jpeg"))])
+    projects.append({
+        "id": "default",
+        "name": "Default Pose Dataset",
+        "is_default": True,
+        "created_at": "Pre-loaded",
+        "image_count": def_cnt,
+        "has_model": os.path.exists(def_paths["best_weights"])
+    })
+    if os.path.exists(TOP_PROJECTS_DIR):
+        for p_id in sorted(os.listdir(TOP_PROJECTS_DIR)):
+            p_dir = os.path.join(TOP_PROJECTS_DIR, p_id)
+            if os.path.isdir(p_dir):
+                meta_file = os.path.join(p_dir, "project.json")
+                meta = {}
+                if os.path.exists(meta_file):
+                    try:
+                        with open(meta_file, "r", encoding="utf-8") as mf:
+                            meta = json.load(mf)
+                    except Exception:
+                        pass
+                p_paths = get_top_paths(p_id)
+                cnt = 0
+                for sub in ["train", "val", "raw"]:
+                    d = os.path.join(p_paths["dataset_dir"], "images", sub)
+                    if os.path.exists(d):
+                        cnt += len([f for f in os.listdir(d) if f.lower().endswith((".jpg", ".png", ".jpeg"))])
+                projects.append({
+                    "id": p_id,
+                    "name": meta.get("name", p_id),
+                    "is_default": False,
+                    "created_at": meta.get("created_at", "Unknown"),
+                    "image_count": cnt,
+                    "has_model": os.path.exists(p_paths["best_weights"])
+                })
+    return projects
+
+
+def create_top_project(name):
+    global ACTIVE_TOP_PROJECT_ID
+    import re
+    clean_name = re.sub(r'[^a-zA-Z0-9_\-\s]', '', name.strip()) or "Pose_Project"
+    pid = "pose_" + time.strftime("%Y%m%d_%H%M%S")
+    paths = get_top_paths(pid)
+    for p in [paths["images_raw"], paths["images_train"], paths["images_val"], paths["labels_train"], paths["labels_val"], paths["runs_dir"]]:
+        os.makedirs(p, exist_ok=True)
+
+    norm_dataset = paths["dataset_dir"].replace("\\", "/")
+    yaml_data = {
+        "path": norm_dataset,
+        "train": "images/train",
+        "val": "images/val",
+        "names": {
+            0: "wire_red",
+            1: "wire_black"
+        },
+        "kpt_shape": [3, 3],
+        "flip_idx": [0, 1, 2]
+    }
+    with open(paths["yaml_path"], "w", encoding="utf-8") as yf:
+        yaml.dump(yaml_data, yf, sort_keys=False)
+
+    if os.path.exists(COLORS_PATH):
+        try:
+            shutil.copy2(COLORS_PATH, paths["colors_path"])
+        except Exception:
+            pass
+
+    meta = {
+        "id": pid,
+        "name": clean_name,
+        "type": "top_pose",
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    with open(os.path.join(paths["proj_dir"], "project.json"), "w", encoding="utf-8") as mf:
+        json.dump(meta, mf, indent=2)
+
+    ACTIVE_TOP_PROJECT_ID = pid
+    return meta
+
+
+def delete_top_project(pid):
+    global ACTIVE_TOP_PROJECT_ID
+    if pid == "default":
+        return False, "Cannot delete default project."
+    p_dir = os.path.join(TOP_PROJECTS_DIR, pid)
+    if os.path.exists(p_dir):
+        shutil.rmtree(p_dir, ignore_errors=True)
+    if ACTIVE_TOP_PROJECT_ID == pid:
+        ACTIVE_TOP_PROJECT_ID = "default"
+    return True, "Project deleted."
+
+
+def get_side_paths(project_id=None):
+    pid = project_id or ACTIVE_SIDE_PROJECT_ID
+    if pid == "default":
+        return {
+            "id": "default",
+            "is_default": True,
+            "proj_dir": SCRIPT_DIR,
+            "images_dir": ORIGIN3_IMAGES_DIR,
+            "labels_dir": ORIGIN3_LABELS_DIR,
+            "yolo_dir": ORIGIN3_YOLO_DIR,
+            "yaml_path": ORIGIN3_YAML_PATH,
+            "runs_dir": os.path.join(SCRIPT_DIR, "runs"),
+            "best_weights": os.path.join(SCRIPT_DIR, "runs", "origin3_model", "weights", "best.pt")
+        }
+    proj_dir = os.path.join(SIDE_PROJECTS_DIR, pid)
+    yolo_dir = os.path.join(proj_dir, "yolo_dataset")
+    return {
+        "id": pid,
+        "is_default": False,
+        "proj_dir": proj_dir,
+        "images_dir": os.path.join(proj_dir, "images"),
+        "labels_dir": os.path.join(proj_dir, "labels"),
+        "yolo_dir": yolo_dir,
+        "yaml_path": os.path.join(yolo_dir, "data.yaml"),
+        "runs_dir": os.path.join(proj_dir, "runs"),
+        "best_weights": os.path.join(proj_dir, "runs", "origin3_model", "weights", "best.pt")
+    }
+
+
+def list_side_projects():
+    projects = []
+    def_paths = get_side_paths("default")
+    def_cnt = len([f for f in os.listdir(def_paths["images_dir"]) if f.lower().endswith((".jpg", ".png", ".jpeg"))]) if os.path.exists(def_paths["images_dir"]) else 0
+    projects.append({
+        "id": "default",
+        "name": "Default Origin 3 Dataset",
+        "is_default": True,
+        "created_at": "Pre-loaded",
+        "image_count": def_cnt,
+        "has_model": os.path.exists(def_paths["best_weights"])
+    })
+    if os.path.exists(SIDE_PROJECTS_DIR):
+        for p_id in sorted(os.listdir(SIDE_PROJECTS_DIR)):
+            p_dir = os.path.join(SIDE_PROJECTS_DIR, p_id)
+            if os.path.isdir(p_dir):
+                meta_file = os.path.join(p_dir, "project.json")
+                meta = {}
+                if os.path.exists(meta_file):
+                    try:
+                        with open(meta_file, "r", encoding="utf-8") as mf:
+                            meta = json.load(mf)
+                    except Exception:
+                        pass
+                p_paths = get_side_paths(p_id)
+                cnt = len([f for f in os.listdir(p_paths["images_dir"]) if f.lower().endswith((".jpg", ".png", ".jpeg"))]) if os.path.exists(p_paths["images_dir"]) else 0
+                projects.append({
+                    "id": p_id,
+                    "name": meta.get("name", p_id),
+                    "is_default": False,
+                    "created_at": meta.get("created_at", "Unknown"),
+                    "image_count": cnt,
+                    "has_model": os.path.exists(p_paths["best_weights"])
+                })
+    return projects
+
+
+def create_side_project(name):
+    global ACTIVE_SIDE_PROJECT_ID
+    import re
+    clean_name = re.sub(r'[^a-zA-Z0-9_\-\s]', '', name.strip()) or "Side_Project"
+    pid = "side_" + time.strftime("%Y%m%d_%H%M%S")
+    paths = get_side_paths(pid)
+    for p in [paths["images_dir"], paths["labels_dir"], paths["yolo_dir"], paths["runs_dir"]]:
+        os.makedirs(p, exist_ok=True)
+    meta = {
+        "id": pid,
+        "name": clean_name,
+        "type": "side_detection",
+        "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    with open(os.path.join(paths["proj_dir"], "project.json"), "w", encoding="utf-8") as mf:
+        json.dump(meta, mf, indent=2)
+    ACTIVE_SIDE_PROJECT_ID = pid
+    return meta
+
+
+def delete_side_project(pid):
+    global ACTIVE_SIDE_PROJECT_ID
+    if pid == "default":
+        return False, "Cannot delete default project."
+    p_dir = os.path.join(SIDE_PROJECTS_DIR, pid)
+    if os.path.exists(p_dir):
+        shutil.rmtree(p_dir, ignore_errors=True)
+    if ACTIVE_SIDE_PROJECT_ID == pid:
+        ACTIVE_SIDE_PROJECT_ID = "default"
+    return True, "Project deleted."
+
 
 # Default color palette for wire classes
 DEFAULT_PALETTE = [
@@ -88,16 +333,19 @@ def cv2_to_base64(bgr_img):
     return "data:image/jpeg;base64," + base64.b64encode(encoded.tobytes()).decode("utf-8")
 
 def get_classes_data():
-    if not os.path.exists(DATA_YAML_PATH):
+    paths = get_top_paths()
+    data_yaml = paths["yaml_path"]
+    colors_file = paths["colors_path"]
+    if not os.path.exists(data_yaml):
         return []
-    with open(DATA_YAML_PATH, "r") as f:
+    with open(data_yaml, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     names = cfg.get("names", {})
     
     color_map = {}
-    if os.path.exists(COLORS_PATH):
+    if os.path.exists(colors_file):
         try:
-            with open(COLORS_PATH, "r") as cf:
+            with open(colors_file, "r", encoding="utf-8") as cf:
                 color_map = json.load(cf)
         except Exception:
             pass
@@ -111,15 +359,17 @@ def get_classes_data():
     return classes_list
 
 def save_class_color(class_id, color):
+    paths = get_top_paths()
+    colors_file = paths["colors_path"]
     color_map = {}
-    if os.path.exists(COLORS_PATH):
+    if os.path.exists(colors_file):
         try:
-            with open(COLORS_PATH, "r") as cf:
+            with open(colors_file, "r", encoding="utf-8") as cf:
                 color_map = json.load(cf)
         except Exception:
             pass
     color_map[str(class_id)] = color
-    with open(COLORS_PATH, "w") as cf:
+    with open(colors_file, "w", encoding="utf-8") as cf:
         json.dump(color_map, cf, indent=2)
 
 # ----------------- TRAINING MANAGER -----------------
@@ -141,7 +391,7 @@ class TrainingManager:
         if len(self.logs) > 300:
             self.logs = self.logs[-300:]
 
-    def start(self, epochs=20, batch=8, weights_choice="best"):
+    def start(self, epochs=20, batch=8, weights_choice="best", project_id=None):
         if self.status == "training":
             return False, "Training is already in progress."
 
@@ -152,26 +402,55 @@ class TrainingManager:
         self.logs = []
         self.error_msg = ""
 
-        self.thread = threading.Thread(target=self._run_train, args=(epochs, batch, weights_choice), daemon=True)
+        self.thread = threading.Thread(target=self._run_train, args=(epochs, batch, weights_choice, project_id), daemon=True)
         self.thread.start()
         return True, "Training started in background."
 
-    def _run_train(self, epochs, batch, weights_choice):
+    def _run_train(self, epochs, batch, weights_choice, project_id=None):
         try:
-            self.log(f"Starting YOLOv8-Pose retraining: {epochs} epochs, batch size {batch}...")
+            paths = get_top_paths(project_id)
+            self.log(f"Starting YOLOv8-Pose retraining: {epochs} epochs, batch size {batch} (Project: {paths['id']})...")
             
+            # Check for labeled training data and auto-split validation if needed
+            train_imgs = glob.glob(os.path.join(paths["images_train"], "*.jpg")) + glob.glob(os.path.join(paths["images_train"], "*.png"))
+            val_imgs = glob.glob(os.path.join(paths["images_val"], "*.jpg")) + glob.glob(os.path.join(paths["images_val"], "*.png"))
+            raw_imgs = glob.glob(os.path.join(paths["images_raw"], "*.jpg")) + glob.glob(os.path.join(paths["images_raw"], "*.png"))
+
+            if not train_imgs and not val_imgs:
+                if raw_imgs:
+                    raise RuntimeError("Images are uploaded but not annotated yet! Please annotate at least 1 image before retraining.")
+                else:
+                    raise RuntimeError("No images found in this project. Please upload and annotate images first.")
+
+            if len(val_imgs) == 0 and len(train_imgs) > 0:
+                self.log("Auto-preparing validation set (20% split) for pose retraining...")
+                val_target = max(1, int(len(train_imgs) * 0.2)) if len(train_imgs) > 1 else 1
+                for i in range(val_target):
+                    t_img = train_imgs[i]
+                    stem = os.path.splitext(os.path.basename(t_img))[0]
+                    t_lbl = os.path.join(paths["labels_train"], f"{stem}.txt")
+                    v_img = os.path.join(paths["images_val"], os.path.basename(t_img))
+                    v_lbl = os.path.join(paths["labels_val"], f"{stem}.txt")
+                    shutil.copy2(t_img, v_img)
+                    if os.path.exists(t_lbl):
+                        shutil.copy2(t_lbl, v_lbl)
+                self.log(f"Split {val_target} images into validation set.")
+
             # Clear label caches
-            for c_file in glob.glob(os.path.join(SCRIPT_DIR, "dataset", "labels", "*.cache")):
+            for c_file in (
+                glob.glob(os.path.join(paths["dataset_dir"], "labels", "*.cache")) +
+                glob.glob(os.path.join(paths["dataset_dir"], "labels", "*", "*.cache"))
+            ):
                 try: os.remove(c_file)
                 except Exception: pass
 
-            best_weights = os.path.join(SCRIPT_DIR, "runs", "wire_pose_model", "weights", "best.pt")
+            best_weights = paths["best_weights"]
             if weights_choice == "best" and os.path.exists(best_weights):
                 base_model_path = best_weights
-                self.log(f"Fine-tuning from existing best model: {os.path.basename(best_weights)}")
+                self.log(f"Fine-tuning from existing project model: {os.path.basename(best_weights)}")
             else:
                 base_model_path = os.path.join(SCRIPT_DIR, "yolov8n-pose.pt")
-                self.log(f"Training from base nano model: {os.path.basename(base_model_path)}")
+                self.log(f"Training from base nano pose model (from scratch): {os.path.basename(base_model_path)}")
 
             model = YOLO(base_model_path)
 
@@ -195,26 +474,31 @@ class TrainingManager:
 
             model.add_callback("on_train_epoch_end", on_epoch_end)
 
-            self.log("Training engine running...")
+            self.log(f"Training engine running with {paths['yaml_path']}...")
             results = model.train(
-                data=DATA_YAML_PATH,
+                data=paths["yaml_path"],
                 epochs=epochs,
                 imgsz=640,
                 batch=batch,
                 device="cpu",
                 workers=0,
                 fliplr=0.0,
-                project=os.path.join(SCRIPT_DIR, "runs"),
+                project=paths["runs_dir"],
                 name="wire_pose_model",
                 exist_ok=True,
                 plots=True,
                 verbose=False
             )
 
+            gen_best = os.path.join(paths["runs_dir"], "wire_pose_model", "weights", "best.pt")
+            if os.path.exists(gen_best) and gen_best != paths["best_weights"]:
+                os.makedirs(os.path.dirname(paths["best_weights"]), exist_ok=True)
+                shutil.copy2(gen_best, paths["best_weights"])
+
             self.status = "completed"
             self.progress_percent = 100
             self.log("Training successfully finished! New best weights generated.")
-            reload_model_after_training()
+            reload_model_after_training(paths["best_weights"])
             self.log("Live inspection engine updated with the newly retrained model weights.")
 
         except Exception as e:
@@ -228,32 +512,39 @@ class TrainingManager:
 training_mgr = TrainingManager()
 
 
-def prepare_origin3_yolo_dataset(split_ratio=0.8, seed=42):
+def prepare_origin3_yolo_dataset(paths=None, split_ratio=0.8, seed=42):
     import random
     random.seed(seed)
+    if paths is None:
+        paths = get_side_paths()
+
+    images_dir = paths["images_dir"]
+    labels_dir = paths["labels_dir"]
+    yolo_dir = paths["yolo_dir"]
+    yaml_path = paths["yaml_path"]
 
     all_images = sorted(
-        glob.glob(os.path.join(ORIGIN3_IMAGES_DIR, "*.jpg")) +
-        glob.glob(os.path.join(ORIGIN3_IMAGES_DIR, "*.png")) +
-        glob.glob(os.path.join(ORIGIN3_IMAGES_DIR, "*.jpeg"))
+        glob.glob(os.path.join(images_dir, "*.jpg")) +
+        glob.glob(os.path.join(images_dir, "*.png")) +
+        glob.glob(os.path.join(images_dir, "*.jpeg"))
     )
 
     if not all_images:
-        return False, "No images found in origin3_dataset/images"
+        return False, f"No images found in project images directory ({images_dir})."
 
     labeled_pairs = []
     unlabeled_images = []
 
     for img_path in all_images:
         base_name = os.path.splitext(os.path.basename(img_path))[0]
-        lbl_path = os.path.join(ORIGIN3_LABELS_DIR, f"{base_name}.txt")
+        lbl_path = os.path.join(labels_dir, f"{base_name}.txt")
         if os.path.exists(lbl_path) and os.path.getsize(lbl_path) > 0:
             labeled_pairs.append((img_path, lbl_path))
         else:
             unlabeled_images.append(img_path)
 
     if not labeled_pairs:
-        return False, "No labeled images found in origin3_dataset/labels. Please annotate at least one image."
+        return False, "No labeled images found in project labels. Please annotate at least one image."
 
     random.shuffle(labeled_pairs)
     train_count = max(1, int(len(labeled_pairs) * split_ratio))
@@ -263,15 +554,15 @@ def prepare_origin3_yolo_dataset(split_ratio=0.8, seed=42):
         val_pairs = [train_pairs[-1]]
 
     dirs = {
-        "train_img": os.path.join(ORIGIN3_YOLO_DIR, "images", "train"),
-        "val_img": os.path.join(ORIGIN3_YOLO_DIR, "images", "val"),
-        "train_lbl": os.path.join(ORIGIN3_YOLO_DIR, "labels", "train"),
-        "val_lbl": os.path.join(ORIGIN3_YOLO_DIR, "labels", "val"),
+        "train_img": os.path.join(yolo_dir, "images", "train"),
+        "val_img": os.path.join(yolo_dir, "images", "val"),
+        "train_lbl": os.path.join(yolo_dir, "labels", "train"),
+        "val_lbl": os.path.join(yolo_dir, "labels", "val"),
     }
 
-    if os.path.exists(ORIGIN3_YOLO_DIR):
+    if os.path.exists(yolo_dir):
         try:
-            shutil.rmtree(ORIGIN3_YOLO_DIR)
+            shutil.rmtree(yolo_dir)
         except Exception:
             pass
     for d in dirs.values():
@@ -286,14 +577,14 @@ def prepare_origin3_yolo_dataset(split_ratio=0.8, seed=42):
         shutil.copy2(lbl, dirs["val_lbl"])
 
     yaml_content = {
-        "path": ORIGIN3_YOLO_DIR.replace("\\", "/"),
+        "path": yolo_dir.replace("\\", "/"),
         "train": "images/train",
         "val": "images/val",
         "names": {
             0: "origin_3"
         }
     }
-    with open(ORIGIN3_YAML_PATH, "w", encoding="utf-8") as f:
+    with open(yaml_path, "w", encoding="utf-8") as f:
         yaml.dump(yaml_content, f, sort_keys=False)
 
     return True, f"Origin 3 dataset split complete: {len(train_pairs)} train, {len(val_pairs)} val images."
@@ -317,7 +608,7 @@ class Origin3TrainingManager:
         if len(self.logs) > 300:
             self.logs = self.logs[-300:]
 
-    def start(self, epochs=30, batch=8, weights_choice="best"):
+    def start(self, epochs=30, batch=8, weights_choice="best", project_id=None):
         if self.status == "training":
             return False, "Training is already in progress for Origin 3."
 
@@ -328,41 +619,39 @@ class Origin3TrainingManager:
         self.logs = []
         self.error_msg = ""
 
-        self.thread = threading.Thread(target=self._run_train, args=(epochs, batch, weights_choice), daemon=True)
+        self.thread = threading.Thread(target=self._run_train, args=(epochs, batch, weights_choice, project_id), daemon=True)
         self.thread.start()
         return True, "Origin 3 retraining started in background."
 
-    def _run_train(self, epochs, batch, weights_choice):
+    def _run_train(self, epochs, batch, weights_choice, project_id=None):
         try:
-            self.log(f"Preparing Origin 3 YOLO dataset split (80/20)...")
-            ok, prep_msg = prepare_origin3_yolo_dataset()
+            paths = get_side_paths(project_id)
+            self.log(f"Preparing Origin 3 YOLO dataset split (80/20) for project {paths['id']}...")
+            ok, prep_msg = prepare_origin3_yolo_dataset(paths)
             if not ok:
                 raise RuntimeError(prep_msg)
             self.log(prep_msg)
 
             # Clear cache files
             for pattern in [
-                os.path.join(ORIGIN3_YOLO_DIR, "labels", "*.cache"),
-                os.path.join(ORIGIN3_YOLO_DIR, "labels", "*", "*.cache")
+                os.path.join(paths["yolo_dir"], "labels", "*.cache"),
+                os.path.join(paths["yolo_dir"], "labels", "*", "*.cache")
             ]:
                 for c_file in glob.glob(pattern):
                     try: os.remove(c_file)
                     except Exception: pass
 
-            best_weights = os.path.join(SCRIPT_DIR, "runs", "origin3_model", "weights", "best.pt")
-            if not os.path.exists(best_weights):
-                best_weights = os.path.join(os.path.dirname(SCRIPT_DIR), "runs", "origin3_model", "weights", "best.pt")
-
+            best_weights = paths["best_weights"]
             if weights_choice == "best" and os.path.exists(best_weights):
                 base_model_path = best_weights
-                self.log(f"Fine-tuning from existing best model: {os.path.basename(best_weights)}")
+                self.log(f"Fine-tuning from existing project model: {os.path.basename(best_weights)}")
             else:
                 base_model_path = os.path.join(SCRIPT_DIR, "yolov8n.pt")
                 if not os.path.exists(base_model_path):
                     base_model_path = os.path.join(os.path.dirname(SCRIPT_DIR), "yolov8n.pt")
                 if not os.path.exists(base_model_path):
                     base_model_path = "yolov8n.pt"
-                self.log(f"Training from base nano weights: {os.path.basename(base_model_path)}")
+                self.log(f"Training from base nano weights (from scratch): {os.path.basename(base_model_path)}")
 
             self.log(f"Loading YOLO model: {base_model_path}")
             model = YOLO(base_model_path)
@@ -389,33 +678,29 @@ class Origin3TrainingManager:
 
             self.log(f"Starting Ultralytics YOLOv8 training: {epochs} epochs, batch size {batch}...")
             results = model.train(
-                data=ORIGIN3_YAML_PATH,
+                data=paths["yaml_path"],
                 epochs=epochs,
                 imgsz=640,
                 batch=batch,
                 device="cpu",
                 workers=0,
-                project=os.path.join(SCRIPT_DIR, "runs"),
+                project=paths["runs_dir"],
                 name="origin3_model",
                 exist_ok=True,
                 plots=True,
                 verbose=False
             )
 
-            # Sync generated weights to workspace runs directory as well
-            gen_best = os.path.join(SCRIPT_DIR, "runs", "origin3_model", "weights", "best.pt")
-            ws_runs_best = os.path.join(os.path.dirname(SCRIPT_DIR), "runs", "origin3_model", "weights", "best.pt")
-            if os.path.exists(gen_best):
-                try:
-                    os.makedirs(os.path.dirname(ws_runs_best), exist_ok=True)
-                    shutil.copy2(gen_best, ws_runs_best)
-                except Exception as sync_err:
-                    self.log(f"[WARN] Sync weights error: {sync_err}")
+            # Sync generated weights to project best weights
+            gen_best = os.path.join(paths["runs_dir"], "origin3_model", "weights", "best.pt")
+            if os.path.exists(gen_best) and gen_best != paths["best_weights"]:
+                os.makedirs(os.path.dirname(paths["best_weights"]), exist_ok=True)
+                shutil.copy2(gen_best, paths["best_weights"])
 
             self.status = "completed"
             self.progress_percent = 100
             self.log("Origin 3 training successfully completed! Generated new best.pt.")
-            reload_origin3_model()
+            reload_origin3_model(paths["best_weights"])
             self.log("Side Inspection model hot-reloaded with updated weights in dual inspection engine.")
 
         except Exception as e:
@@ -423,6 +708,8 @@ class Origin3TrainingManager:
             tb = traceback.format_exc()
             print(f"[ORIGIN3 TRAIN ERROR]\n{tb}")
             self.status = "error"
+            self.error_msg = str(e)
+            self.log(f"Origin 3 training error: {type(e).__name__}: {str(e)}")
             self.error_msg = str(e)
             self.log(f"Origin 3 training error: {type(e).__name__}: {str(e)}")
 
@@ -1333,15 +1620,21 @@ HTML_TEMPLATE = """
 
         .studio-workspace {
             display: grid;
-            grid-template-columns: 240px minmax(0, 1fr) 280px;
-            gap: 12px;
+            grid-template-columns: 310px minmax(0, 1fr) 290px;
+            gap: 14px;
             width: 100%;
             max-width: 100%;
             box-sizing: border-box;
             align-items: start;
         }
 
-        @media (max-width: 1100px) {
+        @media (max-width: 1200px) {
+            .studio-workspace {
+                grid-template-columns: 280px minmax(0, 1fr) 270px;
+            }
+        }
+
+        @media (max-width: 990px) {
             .studio-workspace {
                 grid-template-columns: 1fr;
             }
@@ -1537,11 +1830,17 @@ HTML_TEMPLATE = """
             color: #f8fafc;
             border: 1px solid #475569;
             border-radius: 4px;
-            padding: 3px 8px;
+            padding: 5px 8px;
             font-size: 0.78rem;
             font-weight: 600;
             cursor: pointer;
             outline: none;
+            min-width: 0;
+            max-width: 100%;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            overflow: hidden;
+            box-sizing: border-box;
         }
         .anno-class-select:focus {
             border-color: #3b82f6;
@@ -2096,6 +2395,29 @@ HTML_TEMPLATE = """
             
             <!-- Left Panel: Classes & Image Queue -->
             <div class="studio-card">
+                <div style="background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 8px; padding: 10px 12px; margin-bottom: 2px;">
+                    <div class="card-header-title" style="margin-bottom: 8px;">
+                        <span style="display: flex; align-items: center; gap: 6px; font-weight: 700; color: #f1f5f9; font-size: 0.84rem;">
+                            <span style="color: #60a5fa;">📁</span> Pose Project
+                        </span>
+                        <button class="tool-btn primary" style="padding: 3px 10px; font-size: 0.72rem;" onclick="openNewProjectModal('top')">+ New Project</button>
+                    </div>
+                    <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 8px;">
+                        <select id="topProjectSelect" class="anno-class-select" style="flex: 1; min-width: 0; font-size: 0.78rem;" onchange="switchTopProject(this.value)">
+                            <!-- Populated dynamically -->
+                        </select>
+                        <button id="btnDeleteTopProject" class="tool-btn" style="flex-shrink: 0; padding: 5px 8px; color: #f87171;" title="Delete Project" onclick="deleteTopProject()">🗑️</button>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.72rem;">
+                        <span class="badge" style="background: rgba(59,130,246,0.18); color: #60a5fa; border: 1px solid rgba(59,130,246,0.35); white-space: nowrap; font-size: 0.7rem; padding: 2px 7px;">
+                            YOLOv8-Pose &bull; 3 Pts
+                        </span>
+                        <span id="topProjectBadge" style="color: #94a3b8; font-size: 0.72rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right;">Default (226 imgs)</span>
+                    </div>
+                </div>
+
+                <hr style="border-color: var(--border); margin: 6px 0;">
+
                 <div class="card-header-title">
                     <span>Wire Classes</span>
                     <button class="btn-add-class" onclick="openAddClassModal()">+ Add Class</button>
@@ -2246,6 +2568,29 @@ HTML_TEMPLATE = """
             
             <!-- Left Panel: Origin 3 Target & Side Images Queue -->
             <div class="studio-card">
+                <div style="background: rgba(15, 23, 42, 0.5); border: 1px solid rgba(6, 182, 212, 0.25); border-radius: 8px; padding: 10px 12px; margin-bottom: 2px;">
+                    <div class="card-header-title" style="margin-bottom: 8px;">
+                        <span style="display: flex; align-items: center; gap: 6px; font-weight: 700; color: #f1f5f9; font-size: 0.84rem;">
+                            <span style="color: #38bdf8;">📁</span> Side Project
+                        </span>
+                        <button class="tool-btn primary" style="padding: 3px 10px; font-size: 0.72rem;" onclick="openNewProjectModal('side')">+ New Project</button>
+                    </div>
+                    <div style="display: flex; gap: 6px; align-items: center; margin-bottom: 8px;">
+                        <select id="sideProjectSelect" class="anno-class-select" style="flex: 1; min-width: 0; font-size: 0.78rem;" onchange="switchSideProject(this.value)">
+                            <!-- Populated dynamically -->
+                        </select>
+                        <button id="btnDeleteSideProject" class="tool-btn" style="flex-shrink: 0; padding: 5px 8px; color: #f87171;" title="Delete Project" onclick="deleteSideProject()">🗑️</button>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.72rem;">
+                        <span class="badge" style="background: rgba(6, 182, 212, 0.18); color: #38bdf8; border: 1px solid rgba(6, 182, 212, 0.35); white-space: nowrap; font-size: 0.7rem; padding: 2px 7px;">
+                            YOLOv8-Detect &bull; Box
+                        </span>
+                        <span id="sideProjectBadge" style="color: #94a3b8; font-size: 0.72rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right;">Default (67 imgs)</span>
+                    </div>
+                </div>
+
+                <hr style="border-color: var(--border); margin: 6px 0;">
+
                 <div class="card-header-title">
                     <span>Origin 3 Target Class</span>
                     <span class="badge" style="background: rgba(6, 182, 212, 0.18); color: #38bdf8; border: 1px solid rgba(6, 182, 212, 0.4);">
@@ -2411,6 +2756,42 @@ HTML_TEMPLATE = """
             <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;">
                 <button class="tool-btn" onclick="closeAddClassModal()">Cancel</button>
                 <button class="tool-btn primary" onclick="submitAddClass()">Save Class</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: New Top Pose Project -->
+    <div class="modal-overlay hidden" id="newTopProjectModal">
+        <div class="modal-box">
+            <h3 style="font-size: 1rem;">Create New Pose Project</h3>
+            <p style="font-size: 0.75rem; color: var(--text-muted); line-height: 1.4;">
+                Start with a clean, empty workspace for Wire Harness Pose Estimation. Upload images, annotate wire keypoints (Origin, Midpoint, Terminal), and train a new YOLOv8-Pose model from scratch.
+            </p>
+            
+            <label style="font-size: 0.78rem; font-weight: 600;">Project Name:</label>
+            <input type="text" id="newTopProjectNameInput" placeholder="e.g. Line 2 Harness Pose" style="margin-bottom: 12px;" onkeydown="if(event.key==='Enter') submitCreateTopProject()">
+
+            <div style="display: flex; justify-content: flex-end; gap: 8px;">
+                <button class="tool-btn" onclick="closeNewProjectModal('top')">Cancel</button>
+                <button class="tool-btn primary" onclick="submitCreateTopProject()">Create & Open Project</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal: New Side Origin 3 Project -->
+    <div class="modal-overlay hidden" id="newSideProjectModal">
+        <div class="modal-box">
+            <h3 style="font-size: 1rem;">Create New Side Detection Project</h3>
+            <p style="font-size: 0.75rem; color: var(--text-muted); line-height: 1.4;">
+                Start with a clean, empty workspace for Side Camera Object Detection. Upload side view images, drag bounding boxes for Origin 3 connector, and train a new YOLOv8 detection model from scratch.
+            </p>
+            
+            <label style="font-size: 0.78rem; font-weight: 600;">Project Name:</label>
+            <input type="text" id="newSideProjectNameInput" placeholder="e.g. Side Origin 3 Batch B" style="margin-bottom: 12px;" onkeydown="if(event.key==='Enter') submitCreateSideProject()">
+
+            <div style="display: flex; justify-content: flex-end; gap: 8px;">
+                <button class="tool-btn" onclick="closeNewProjectModal('side')">Cancel</button>
+                <button class="tool-btn primary" onclick="submitCreateSideProject()">Create & Open Project</button>
             </div>
         </div>
     </div>
@@ -3018,8 +3399,202 @@ HTML_TEMPLATE = """
             }
         });
 
+        // ================= TOAST NOTIFICATION HELPER =================
+        function showToast(msg, isError = false) {
+            let toast = document.getElementById('globalToast');
+            if (!toast) {
+                toast = document.createElement('div');
+                toast.id = 'globalToast';
+                toast.style.position = 'fixed';
+                toast.style.bottom = '24px';
+                toast.style.right = '24px';
+                toast.style.padding = '10px 18px';
+                toast.style.borderRadius = '6px';
+                toast.style.fontSize = '0.82rem';
+                toast.style.fontWeight = '600';
+                toast.style.zIndex = '99999';
+                toast.style.boxShadow = '0 8px 24px rgba(0,0,0,0.5)';
+                toast.style.transition = 'opacity 0.25s ease, transform 0.25s ease';
+                document.body.appendChild(toast);
+            }
+            toast.textContent = msg;
+            toast.style.background = isError ? '#7f1d1d' : '#064e3b';
+            toast.style.color = isError ? '#fecaca' : '#a7f3d0';
+            toast.style.border = isError ? '1px solid #ef4444' : '1px solid #10b981';
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateY(0)';
+            clearTimeout(toast._timer);
+            toast._timer = setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(10px)';
+            }, 3200);
+        }
+
+        // ================= TOP POSE PROJECT WORKSPACE METHODS =================
+        let activeTopProjectId = 'default';
+        let topProjectsList = [];
+
+        async function loadTopProjects() {
+            try {
+                const res = await fetch('/api/annotation/projects');
+                const data = await res.json();
+                if (data.success) {
+                    topProjectsList = data.projects;
+                    activeTopProjectId = data.active_id || 'default';
+                    renderTopProjectSelect();
+                }
+            } catch (err) {
+                console.error("Failed to load top projects:", err);
+            }
+        }
+
+        function renderTopProjectSelect() {
+            const select = document.getElementById('topProjectSelect');
+            if (!select) return;
+            select.innerHTML = '';
+            topProjectsList.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = `${p.name} (${p.image_count} img${p.has_model ? ' • ✓' : ''})`;
+                if (p.id === activeTopProjectId) opt.selected = true;
+                select.appendChild(opt);
+            });
+            const delBtn = document.getElementById('btnDeleteTopProject');
+            if (delBtn) {
+                const isDef = (activeTopProjectId === 'default');
+                delBtn.disabled = isDef;
+                delBtn.style.opacity = isDef ? '0.35' : '1.0';
+                delBtn.style.cursor = isDef ? 'not-allowed' : 'pointer';
+            }
+            const badge = document.getElementById('topProjectBadge');
+            if (badge) {
+                const cur = topProjectsList.find(p => p.id === activeTopProjectId);
+                badge.textContent = cur ? (cur.is_default ? 'Default (226 imgs)' : `${cur.image_count} imgs`) : activeTopProjectId;
+            }
+        }
+
+        async function switchTopProject(pid) {
+            if (!pid) return;
+            try {
+                const res = await fetch('/api/annotation/projects/select', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project_id: pid })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    activeTopProjectId = data.active_id;
+                    currentImageName = "";
+                    currentImageLoaded = null;
+                    annoWires = [];
+                    pendingPoints = [];
+                    const badge = document.getElementById('currentImgBadge');
+                    if (badge) badge.textContent = 'No image loaded';
+                    ctxAnno.clearRect(0, 0, annoCanvas.width, annoCanvas.height);
+                    renderFinishedWires();
+                    await fetchClasses();
+                    await fetchStudioImages();
+                    // Set base weights selector: if project has no model yet, default to nano (train from scratch)
+                    const cur = topProjectsList.find(p => p.id === pid);
+                    const weightsSelect = document.getElementById('trainWeightsSelect');
+                    if (weightsSelect) {
+                        weightsSelect.value = (cur && cur.has_model) ? 'best' : 'nano';
+                    }
+                    renderTopProjectSelect();
+                    showToast(`Switched to pose project: ${cur ? cur.name : pid}`);
+                }
+            } catch (err) {
+                console.error(err);
+                showToast("Failed to switch pose project", true);
+            }
+        }
+
+        function openNewProjectModal(type) {
+            if (type === 'top') {
+                const modal = document.getElementById('newTopProjectModal');
+                const input = document.getElementById('newTopProjectNameInput');
+                if (input) input.value = '';
+                if (modal) modal.classList.remove('hidden');
+                setTimeout(() => input && input.focus(), 50);
+            } else if (type === 'side') {
+                const modal = document.getElementById('newSideProjectModal');
+                const input = document.getElementById('newSideProjectNameInput');
+                if (input) input.value = '';
+                if (modal) modal.classList.remove('hidden');
+                setTimeout(() => input && input.focus(), 50);
+            }
+        }
+
+        function closeNewProjectModal(type) {
+            if (type === 'top') {
+                const modal = document.getElementById('newTopProjectModal');
+                if (modal) modal.classList.add('hidden');
+            } else if (type === 'side') {
+                const modal = document.getElementById('newSideProjectModal');
+                if (modal) modal.classList.add('hidden');
+            }
+        }
+
+        async function submitCreateTopProject() {
+            const input = document.getElementById('newTopProjectNameInput');
+            const name = input ? input.value.trim() : '';
+            if (!name) {
+                showToast("Please enter a project name", true);
+                return;
+            }
+            try {
+                const res = await fetch('/api/annotation/projects/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    closeNewProjectModal('top');
+                    await loadTopProjects();
+                    await switchTopProject(data.active_id);
+                    showToast(`Created pose project '${name}'. Dataset is empty and ready!`);
+                } else {
+                    showToast(data.error || "Failed to create project", true);
+                }
+            } catch (err) {
+                console.error(err);
+                showToast("Error creating pose project", true);
+            }
+        }
+
+        async function deleteTopProject() {
+            if (activeTopProjectId === 'default') {
+                showToast("Default dataset project cannot be deleted", true);
+                return;
+            }
+            const cur = topProjectsList.find(p => p.id === activeTopProjectId);
+            const pName = cur ? cur.name : activeTopProjectId;
+            if (!confirm(`Are you sure you want to delete pose project '${pName}'? All uploaded images and annotations in this project will be deleted.`)) return;
+
+            try {
+                const res = await fetch('/api/annotation/projects/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project_id: activeTopProjectId })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`Deleted project '${pName}'`);
+                    await loadTopProjects();
+                    await switchTopProject(data.active_id || 'default');
+                } else {
+                    showToast(data.error || "Failed to delete project", true);
+                }
+            } catch (err) {
+                console.error(err);
+                showToast("Error deleting pose project", true);
+            }
+        }
+
         // ================= 2. ANNOTATION STUDIO METHODS =================
         async function loadStudioData() {
+            await loadTopProjects();
             await fetchClasses();
             await fetchStudioImages();
             pollTrainingStatus();
@@ -3183,16 +3758,35 @@ HTML_TEMPLATE = """
                 container.innerHTML = '';
                 document.getElementById('dsTotalImages').textContent = data.images.length;
 
+                if (!data.images || data.images.length === 0) {
+                    container.innerHTML = `
+                        <div style="padding: 24px 12px; text-align: center; color: var(--text-muted); font-size: 0.78rem;">
+                            <div style="font-size: 1.6rem; margin-bottom: 6px;">📭</div>
+                            <div style="font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Empty Dataset</div>
+                            <div>No images in this project yet.</div>
+                            <div style="margin-top: 8px;">Click <b>+ Upload</b> or <b>📸 From Cam</b> above to add images and annotate keypoints.</div>
+                        </div>
+                    `;
+                    currentImageName = "";
+                    currentImageLoaded = null;
+                    document.getElementById('currentImgBadge').textContent = 'No image loaded';
+                    annoWires = [];
+                    pendingPoints = [];
+                    ctxAnno.clearRect(0, 0, annoCanvas.width, annoCanvas.height);
+                    renderFinishedWires();
+                    return;
+                }
+
                 data.images.forEach(img => {
                     const row = document.createElement('div');
                     row.className = 'image-item-row ' + (img.name === currentImageName ? 'active' : '');
                     row.innerHTML = `
-                        <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:130px;" title="${img.name}">${img.name}</span>
-                        <div style="display:flex; align-items:center; gap:6px;">
-                            <span style="font-size:0.68rem; font-weight:700; color:${img.labeled ? '#34d399' : '#94a3b8'};">
+                        <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px; font-size: 0.77rem;" title="${img.name}">${img.name}</span>
+                        <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
+                            <span style="font-size: 0.68rem; font-weight: 700; color: ${img.labeled ? '#34d399' : '#94a3b8'};">
                                 ${img.labeled ? `✔ ${img.wires_count}` : 'Unlabeled'}
                             </span>
-                            <button class="tool-btn" style="padding:2px 5px; font-size:0.68rem; color:#f87171; background:transparent; border-color:transparent;" title="Delete Image" onclick="event.stopPropagation(); deleteImage('${img.name}')">🗑️</button>
+                            <button class="tool-btn" style="padding: 2px 5px; font-size: 0.68rem; color: #f87171; background: transparent; border-color: transparent;" title="Delete Image" onclick="event.stopPropagation(); deleteImage('${img.name}')">🗑️</button>
                         </div>
                     `;
                     row.onclick = () => loadStudioImage(img.name);
@@ -3676,6 +4270,138 @@ HTML_TEMPLATE = """
         }
 
         // ================= SIDE MODEL (ORIGIN 3) STUDIO LOGIC =================
+        let activeSideProjectId = 'default';
+        let sideProjectsList = [];
+
+        async function loadSideProjects() {
+            try {
+                const res = await fetch('/api/origin3/projects');
+                const data = await res.json();
+                if (data.success) {
+                    sideProjectsList = data.projects;
+                    activeSideProjectId = data.active_id || 'default';
+                    renderSideProjectSelect();
+                }
+            } catch (err) {
+                console.error("Failed to load side projects:", err);
+            }
+        }
+
+        function renderSideProjectSelect() {
+            const select = document.getElementById('sideProjectSelect');
+            if (!select) return;
+            select.innerHTML = '';
+            sideProjectsList.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = `${p.name} (${p.image_count} img${p.has_model ? ' • ✓' : ''})`;
+                if (p.id === activeSideProjectId) opt.selected = true;
+                select.appendChild(opt);
+            });
+            const delBtn = document.getElementById('btnDeleteSideProject');
+            if (delBtn) {
+                const isDef = (activeSideProjectId === 'default');
+                delBtn.disabled = isDef;
+                delBtn.style.opacity = isDef ? '0.35' : '1.0';
+                delBtn.style.cursor = isDef ? 'not-allowed' : 'pointer';
+            }
+            const badge = document.getElementById('sideProjectBadge');
+            if (badge) {
+                const cur = sideProjectsList.find(p => p.id === activeSideProjectId);
+                badge.textContent = cur ? (cur.is_default ? 'Default (67 imgs)' : `${cur.image_count} imgs`) : activeSideProjectId;
+            }
+        }
+
+        async function switchSideProject(pid) {
+            if (!pid) return;
+            try {
+                const res = await fetch('/api/origin3/projects/select', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project_id: pid })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    activeSideProjectId = data.active_id;
+                    sideCurrentImgName = "";
+                    sideCurrentImgLoaded = null;
+                    sideBBox = null;
+                    const badge = document.getElementById('sideCurrentImgBadge');
+                    if (badge) badge.textContent = 'No image loaded';
+                    if (ctxSide && sideCanvas) ctxSide.clearRect(0, 0, sideCanvas.width, sideCanvas.height);
+                    await fetchSideImages();
+                    await fetchSideStats();
+                    const cur = sideProjectsList.find(p => p.id === pid);
+                    const weightsSelect = document.getElementById('sideTrainWeightsSelect');
+                    if (weightsSelect) {
+                        weightsSelect.value = (cur && cur.has_model) ? 'best' : 'nano';
+                    }
+                    renderSideProjectSelect();
+                    showToast(`Switched to side project: ${cur ? cur.name : pid}`);
+                }
+            } catch (err) {
+                console.error(err);
+                showToast("Failed to switch side project", true);
+            }
+        }
+
+        async function submitCreateSideProject() {
+            const input = document.getElementById('newSideProjectNameInput');
+            const name = input ? input.value.trim() : '';
+            if (!name) {
+                showToast("Please enter a project name", true);
+                return;
+            }
+            try {
+                const res = await fetch('/api/origin3/projects/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    closeNewProjectModal('side');
+                    await loadSideProjects();
+                    await switchSideProject(data.active_id);
+                    showToast(`Created side project '${name}'. Dataset is empty and ready!`);
+                } else {
+                    showToast(data.error || "Failed to create side project", true);
+                }
+            } catch (err) {
+                console.error(err);
+                showToast("Error creating side project", true);
+            }
+        }
+
+        async function deleteSideProject() {
+            if (activeSideProjectId === 'default') {
+                showToast("Default dataset project cannot be deleted", true);
+                return;
+            }
+            const cur = sideProjectsList.find(p => p.id === activeSideProjectId);
+            const pName = cur ? cur.name : activeSideProjectId;
+            if (!confirm(`Are you sure you want to delete side project '${pName}'? All uploaded images and annotations in this project will be deleted.`)) return;
+
+            try {
+                const res = await fetch('/api/origin3/projects/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project_id: activeSideProjectId })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    showToast(`Deleted side project '${pName}'`);
+                    await loadSideProjects();
+                    await switchSideProject(data.active_id || 'default');
+                } else {
+                    showToast(data.error || "Failed to delete side project", true);
+                }
+            } catch (err) {
+                console.error(err);
+                showToast("Error deleting side project", true);
+            }
+        }
+
         let sideCurrentImgName = "";
         let sideCurrentImgLoaded = null;
         let sideImgOrigW = 1280, sideImgOrigH = 720;
@@ -3690,6 +4416,7 @@ HTML_TEMPLATE = """
         const ctxSide = sideCanvas ? sideCanvas.getContext('2d') : null;
 
         async function loadSideStudioData() {
+            await loadSideProjects();
             await fetchSideStats();
             await fetchSideImages();
         }
@@ -3760,7 +4487,23 @@ HTML_TEMPLATE = """
             }
 
             if (filtered.length === 0) {
-                container.innerHTML = '<div style="color:#64748b; font-size:0.75rem; padding:8px; text-align:center;">No images found in filter</div>';
+                if (!sideImagesList || sideImagesList.length === 0) {
+                    container.innerHTML = `
+                        <div style="padding: 24px 12px; text-align: center; color: var(--text-muted); font-size: 0.78rem;">
+                            <div style="font-size: 1.6rem; margin-bottom: 6px;">📭</div>
+                            <div style="font-weight: 600; color: #cbd5e1; margin-bottom: 4px;">Empty Dataset</div>
+                            <div>No side view images yet.</div>
+                            <div style="margin-top: 8px;">Click <b>+ Upload</b> or <b>📸 Cam 2</b> to add images for Origin 3 annotation.</div>
+                        </div>
+                    `;
+                    sideCurrentImgName = "";
+                    sideCurrentImgLoaded = null;
+                    const badge = document.getElementById('sideCurrentImgBadge');
+                    if (badge) badge.textContent = 'No image loaded';
+                    if (ctxSide && sideCanvas) ctxSide.clearRect(0, 0, sideCanvas.width, sideCanvas.height);
+                } else {
+                    container.innerHTML = '<div style="color:#64748b; font-size:0.75rem; padding:8px; text-align:center;">No images found in filter</div>';
+                }
                 return;
             }
 
@@ -3772,12 +4515,12 @@ HTML_TEMPLATE = """
                     row.style.background = 'rgba(2, 132, 199, 0.15)';
                 }
                 row.innerHTML = `
-                    <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:130px; font-size:0.75rem;" title="${img.name}">${img.name}</span>
-                    <div style="display:flex; align-items:center; gap:6px;">
-                        <span style="font-size:0.68rem; font-weight:700; color:${img.labeled ? '#34d399' : '#f59e0b'};">
+                    <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px; font-size: 0.77rem;" title="${img.name}">${img.name}</span>
+                    <div style="display: flex; align-items: center; gap: 6px; flex-shrink: 0;">
+                        <span style="font-size: 0.68rem; font-weight: 700; color: ${img.labeled ? '#34d399' : '#f59e0b'};">
                             ${img.labeled ? '✔ Box' : '○ Empty'}
                         </span>
-                        <button class="tool-btn" style="padding:2px 5px; font-size:0.68rem; color:#f87171; background:transparent; border-color:transparent;" title="Delete Image" onclick="event.stopPropagation(); deleteSideImage('${img.name}')">🗑️</button>
+                        <button class="tool-btn" style="padding: 2px 5px; font-size: 0.68rem; color: #f87171; background: transparent; border-color: transparent;" title="Delete Image" onclick="event.stopPropagation(); deleteSideImage('${img.name}')">🗑️</button>
                     </div>
                 `;
                 row.onclick = () => loadSideImage(img.name);
@@ -4204,6 +4947,8 @@ HTML_TEMPLATE = """
         // Init
         window.addEventListener('DOMContentLoaded', () => {
             initCameras();
+            loadTopProjects();
+            loadSideProjects();
         });
     </script>
 </body>
@@ -4279,6 +5024,58 @@ def api_inspect():
     parsed = parse_dual_result(dual_res)
     return jsonify(parsed)
 
+# ================= POSE PROJECT MANAGEMENT APIS =================
+@app.route("/api/annotation/projects", methods=["GET"])
+def api_top_projects_list():
+    return jsonify({
+        "success": True,
+        "projects": list_top_projects(),
+        "active_id": ACTIVE_TOP_PROJECT_ID
+    })
+
+@app.route("/api/annotation/projects/create", methods=["POST"])
+def api_top_projects_create():
+    data = request.get_json(silent=True) or {}
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"success": False, "error": "Project name cannot be empty"}), 400
+    meta = create_top_project(name)
+    return jsonify({
+        "success": True,
+        "project": meta,
+        "active_id": ACTIVE_TOP_PROJECT_ID,
+        "projects": list_top_projects()
+    })
+
+@app.route("/api/annotation/projects/select", methods=["POST"])
+def api_top_projects_select():
+    global ACTIVE_TOP_PROJECT_ID
+    data = request.get_json(silent=True) or {}
+    pid = data.get("project_id", "default").strip()
+    available_ids = [p["id"] for p in list_top_projects()]
+    if pid not in available_ids:
+        return jsonify({"success": False, "error": f"Project '{pid}' does not exist"}), 404
+    ACTIVE_TOP_PROJECT_ID = pid
+    return jsonify({
+        "success": True,
+        "active_id": ACTIVE_TOP_PROJECT_ID,
+        "projects": list_top_projects()
+    })
+
+@app.route("/api/annotation/projects/delete", methods=["POST"])
+def api_top_projects_delete():
+    data = request.get_json(silent=True) or {}
+    pid = data.get("project_id", "").strip()
+    ok, msg = delete_top_project(pid)
+    if not ok:
+        return jsonify({"success": False, "error": msg}), 400
+    return jsonify({
+        "success": True,
+        "message": msg,
+        "active_id": ACTIVE_TOP_PROJECT_ID,
+        "projects": list_top_projects()
+    })
+
 # Class Management APIs
 @app.route("/api/classes", methods=["GET"])
 def api_get_classes():
@@ -4286,21 +5083,25 @@ def api_get_classes():
 
 @app.route("/api/classes/add", methods=["POST"])
 def api_add_class():
+    paths = get_top_paths()
     data = request.get_json(silent=True) or {}
     name = data.get("name", "").strip().lower().replace(" ", "_")
     color = data.get("color", "#3b82f6")
     if not name:
         return jsonify({"success": False, "error": "Name required"}), 400
 
-    with open(DATA_YAML_PATH, "r") as f:
-        cfg = yaml.safe_load(f)
+    yaml_file = paths["yaml_path"]
+    cfg = {}
+    if os.path.exists(yaml_file):
+        with open(yaml_file, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
     names = cfg.get("names", {})
     names = {int(k): str(v) for k, v in names.items()}
     next_id = max(names.keys()) + 1 if names else 0
     names[next_id] = name
     cfg["names"] = names
 
-    with open(DATA_YAML_PATH, "w") as f:
+    with open(yaml_file, "w", encoding="utf-8") as f:
         yaml.dump(cfg, f, sort_keys=False)
 
     save_class_color(next_id, color)
@@ -4308,86 +5109,116 @@ def api_add_class():
 
 @app.route("/api/classes/delete", methods=["POST"])
 def api_delete_class():
+    paths = get_top_paths()
     data = request.get_json(silent=True) or {}
     cid = int(data.get("id", -1))
     if cid < 2:
         return jsonify({"success": False, "error": "Cannot delete core red/black classes"}), 400
 
-    with open(DATA_YAML_PATH, "r") as f:
-        cfg = yaml.safe_load(f)
-    names = cfg.get("names", {})
-    names = {int(k): str(v) for k, v in names.items()}
-    if cid in names:
-        del names[cid]
-    cfg["names"] = names
+    yaml_file = paths["yaml_path"]
+    if os.path.exists(yaml_file):
+        with open(yaml_file, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        names = cfg.get("names", {})
+        names = {int(k): str(v) for k, v in names.items()}
+        if cid in names:
+            del names[cid]
+        cfg["names"] = names
 
-    with open(DATA_YAML_PATH, "w") as f:
-        yaml.dump(cfg, f, sort_keys=False)
+        with open(yaml_file, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, sort_keys=False)
 
     return jsonify({"success": True, "classes": get_classes_data()})
 
 # Annotation APIs
 @app.route("/api/annotation/images", methods=["GET"])
 def api_anno_images():
-    train_dir = os.path.join(SCRIPT_DIR, "dataset", "images", "train")
-    val_dir = os.path.join(SCRIPT_DIR, "dataset", "images", "val")
-    raw_dir = os.path.join(SCRIPT_DIR, "dataset", "images", "raw")
+    paths = get_top_paths()
+    train_dir = paths["images_train"]
+    val_dir = paths["images_val"]
+    raw_dir = paths["images_raw"]
     os.makedirs(raw_dir, exist_ok=True)
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(val_dir, exist_ok=True)
 
     images = []
     # Train
     if os.path.exists(train_dir):
-        for f in os.listdir(train_dir):
-            if f.lower().endswith((".jpg", ".png")):
-                lbl = os.path.join(SCRIPT_DIR, "dataset", "labels", "train", os.path.splitext(f)[0] + ".txt")
+        for f in sorted(os.listdir(train_dir)):
+            if f.lower().endswith((".jpg", ".png", ".jpeg")):
+                lbl = os.path.join(paths["labels_train"], os.path.splitext(f)[0] + ".txt")
                 cnt = 0
                 if os.path.exists(lbl):
-                    with open(lbl) as fp: cnt = len(fp.readlines())
+                    try:
+                        with open(lbl, "r", encoding="utf-8") as fp:
+                            cnt = len([l for l in fp.readlines() if l.strip()])
+                    except Exception:
+                        pass
                 images.append({"name": f, "split": "train", "labeled": cnt > 0, "wires_count": cnt})
 
-    # Raw / Newly uploaded
-    for f in os.listdir(raw_dir):
-        if f.lower().endswith((".jpg", ".png")):
-            images.append({"name": f, "split": "raw", "labeled": False, "wires_count": 0})
+    # Val
+    if os.path.exists(val_dir):
+        for f in sorted(os.listdir(val_dir)):
+            if f.lower().endswith((".jpg", ".png", ".jpeg")):
+                lbl = os.path.join(paths["labels_val"], os.path.splitext(f)[0] + ".txt")
+                cnt = 0
+                if os.path.exists(lbl):
+                    try:
+                        with open(lbl, "r", encoding="utf-8") as fp:
+                            cnt = len([l for l in fp.readlines() if l.strip()])
+                    except Exception:
+                        pass
+                images.append({"name": f, "split": "val", "labeled": cnt > 0, "wires_count": cnt})
 
-    return jsonify({"images": images})
+    # Raw / Newly uploaded
+    if os.path.exists(raw_dir):
+        for f in sorted(os.listdir(raw_dir)):
+            if f.lower().endswith((".jpg", ".png", ".jpeg")):
+                images.append({"name": f, "split": "raw", "labeled": False, "wires_count": 0})
+
+    return jsonify({"images": images, "active_project": paths["id"]})
 
 @app.route("/api/annotation/upload", methods=["POST"])
 def api_anno_upload():
-    raw_dir = os.path.join(SCRIPT_DIR, "dataset", "images", "raw")
+    paths = get_top_paths()
+    raw_dir = paths["images_raw"]
     os.makedirs(raw_dir, exist_ok=True)
     files = request.files.getlist("files")
     first_name = ""
     for f in files:
         if f.filename:
-            path = os.path.join(raw_dir, f.filename)
+            safe_name = os.path.basename(f.filename)
+            path = os.path.join(raw_dir, safe_name)
             f.save(path)
-            if not first_name: first_name = f.filename
+            if not first_name: first_name = safe_name
     return jsonify({"success": True, "first_image": first_name})
 
 @app.route("/api/annotation/upload_base64", methods=["POST"])
 def api_anno_upload_base64():
-    raw_dir = os.path.join(SCRIPT_DIR, "dataset", "images", "raw")
+    paths = get_top_paths()
+    raw_dir = paths["images_raw"]
     os.makedirs(raw_dir, exist_ok=True)
     data = request.get_json(silent=True) or {}
     name = data.get("name", f"snap_{int(time.time())}.jpg")
+    safe_name = os.path.basename(name)
     b64_str = data.get("image_base64", "")
     if "," in b64_str: b64_str = b64_str.split(",")[1]
     raw_bytes = base64.b64decode(b64_str)
-    with open(os.path.join(raw_dir, name), "wb") as fp:
+    with open(os.path.join(raw_dir, safe_name), "wb") as fp:
         fp.write(raw_bytes)
-    return jsonify({"success": True, "name": name})
+    return jsonify({"success": True, "name": safe_name})
 
 @app.route("/api/annotation/image_data", methods=["GET"])
 def api_anno_image_data():
+    paths = get_top_paths()
     img_name = request.args.get("file", "")
     if not img_name:
         return jsonify({"success": False, "error": "file param missing"}), 400
 
-    # Locate image
+    safe_name = os.path.basename(img_name)
     img_path = None
-    for folder in ["raw", "train", "val"]:
-        p = os.path.join(SCRIPT_DIR, "dataset", "images", folder, img_name)
+    for folder in [paths["images_raw"], paths["images_train"], paths["images_val"]]:
+        p = os.path.join(folder, safe_name)
         if os.path.exists(p):
             img_path = p
             break
@@ -4404,10 +5235,10 @@ def api_anno_image_data():
 
     # Search for existing label file
     wires = []
-    for split in ["train", "val"]:
-        lbl_p = os.path.join(SCRIPT_DIR, "dataset", "labels", split, os.path.splitext(img_name)[0] + ".txt")
+    for split_dir in [paths["labels_train"], paths["labels_val"]]:
+        lbl_p = os.path.join(split_dir, os.path.splitext(safe_name)[0] + ".txt")
         if os.path.exists(lbl_p):
-            with open(lbl_p, "r") as fp:
+            with open(lbl_p, "r", encoding="utf-8") as fp:
                 for line in fp:
                     parts = line.strip().split()
                     if len(parts) >= 14:
@@ -4422,28 +5253,29 @@ def api_anno_image_data():
 
 @app.route("/api/annotation/save", methods=["POST"])
 def api_anno_save():
+    paths = get_top_paths()
     data = request.get_json(silent=True) or {}
     img_name = data.get("image_name", "")
+    safe_name = os.path.basename(img_name)
     w = int(data.get("width", 1280))
     h = int(data.get("height", 720))
     wires = data.get("wires", [])
 
     # If file was in raw, move it to train
-    raw_path = os.path.join(SCRIPT_DIR, "dataset", "images", "raw", img_name)
-    target_split = "train"
-    train_img_path = os.path.join(SCRIPT_DIR, "dataset", "images", "train", img_name)
-    val_img_path = os.path.join(SCRIPT_DIR, "dataset", "images", "val", img_name)
+    raw_path = os.path.join(paths["images_raw"], safe_name)
+    target_split_img = paths["images_train"]
+    target_split_lbl = paths["labels_train"]
+    val_img_path = os.path.join(paths["images_val"], safe_name)
 
     if os.path.exists(val_img_path):
-        target_split = "val"
+        target_split_img = paths["images_val"]
+        target_split_lbl = paths["labels_val"]
     elif os.path.exists(raw_path):
-        os.makedirs(os.path.dirname(train_img_path), exist_ok=True)
-        shutil.move(raw_path, train_img_path)
+        os.makedirs(target_split_img, exist_ok=True)
+        shutil.move(raw_path, os.path.join(target_split_img, safe_name))
 
-    # Format YOLO pose lines
-    lbl_dir = os.path.join(SCRIPT_DIR, "dataset", "labels", target_split)
-    os.makedirs(lbl_dir, exist_ok=True)
-    lbl_path = os.path.join(lbl_dir, os.path.splitext(img_name)[0] + ".txt")
+    os.makedirs(target_split_lbl, exist_ok=True)
+    lbl_path = os.path.join(target_split_lbl, os.path.splitext(safe_name)[0] + ".txt")
 
     lines = []
     pad = 20
@@ -4474,11 +5306,14 @@ def api_anno_save():
         line = f"{cid} {norm_bcx:.6f} {norm_bcy:.6f} {norm_bw:.6f} {norm_bh:.6f} " + " ".join(kpts_str)
         lines.append(line)
 
-    with open(lbl_path, "w") as fp:
+    with open(lbl_path, "w", encoding="utf-8") as fp:
         fp.write("\n".join(lines) + ("\n" if lines else ""))
 
     # Clear label cache
-    for c_file in glob.glob(os.path.join(SCRIPT_DIR, "dataset", "labels", "*.cache")):
+    for c_file in (
+        glob.glob(os.path.join(paths["dataset_dir"], "labels", "*.cache")) +
+        glob.glob(os.path.join(paths["dataset_dir"], "labels", "*", "*.cache"))
+    ):
         try: os.remove(c_file)
         except Exception: pass
 
@@ -4486,6 +5321,7 @@ def api_anno_save():
 
 @app.route("/api/annotation/delete_image", methods=["POST"])
 def api_anno_delete_image():
+    paths = get_top_paths()
     data = request.get_json(silent=True) or {}
     img_name = data.get("image_name", "").strip()
     if not img_name:
@@ -4495,8 +5331,8 @@ def api_anno_delete_image():
     stem = os.path.splitext(safe_name)[0]
 
     deleted_any = False
-    for sub in ["raw", "train", "val"]:
-        img_p = os.path.join(SCRIPT_DIR, "dataset", "images", sub, safe_name)
+    for folder in [paths["images_raw"], paths["images_train"], paths["images_val"]]:
+        img_p = os.path.join(folder, safe_name)
         if os.path.exists(img_p):
             try:
                 os.remove(img_p)
@@ -4504,18 +5340,17 @@ def api_anno_delete_image():
             except Exception as e:
                 return jsonify({"success": False, "error": f"Failed to delete image: {str(e)}"}), 500
 
-    for sub in ["train", "val"]:
-        lbl_p = os.path.join(SCRIPT_DIR, "dataset", "labels", sub, stem + ".txt")
+    for lbl_dir in [paths["labels_train"], paths["labels_val"]]:
+        lbl_p = os.path.join(lbl_dir, stem + ".txt")
         if os.path.exists(lbl_p):
             try:
                 os.remove(lbl_p)
             except Exception:
                 pass
 
-    # Clear label cache so retraining picks up dataset changes
     for pattern in [
-        os.path.join(SCRIPT_DIR, "dataset", "labels", "*.cache"),
-        os.path.join(SCRIPT_DIR, "dataset", "labels", "*", "*.cache")
+        os.path.join(paths["dataset_dir"], "labels", "*.cache"),
+        os.path.join(paths["dataset_dir"], "labels", "*", "*.cache")
     ]:
         for c_file in glob.glob(pattern):
             try: os.remove(c_file)
@@ -4531,7 +5366,7 @@ def api_train_start():
     batch = int(data.get("batch_size", 8))
     weights = data.get("weights_choice", "best")
 
-    success, msg = training_mgr.start(epochs=epochs, batch=batch, weights_choice=weights)
+    success, msg = training_mgr.start(epochs=epochs, batch=batch, weights_choice=weights, project_id=ACTIVE_TOP_PROJECT_ID)
     if success:
         return jsonify({"success": True, "message": msg})
     return jsonify({"success": False, "error": msg}), 400
@@ -4548,32 +5383,95 @@ def api_train_status():
     })
 
 # ================= ORIGIN 3 SIDE MODEL ROUTES =================
+@app.route("/api/origin3/projects", methods=["GET"])
+def api_side_projects_list():
+    return jsonify({
+        "success": True,
+        "projects": list_side_projects(),
+        "active_id": ACTIVE_SIDE_PROJECT_ID
+    })
+
+@app.route("/api/origin3/projects/create", methods=["POST"])
+def api_side_projects_create():
+    data = request.get_json(silent=True) or {}
+    name = data.get("name", "").strip()
+    if not name:
+        return jsonify({"success": False, "error": "Project name cannot be empty"}), 400
+    meta = create_side_project(name)
+    return jsonify({
+        "success": True,
+        "project": meta,
+        "active_id": ACTIVE_SIDE_PROJECT_ID,
+        "projects": list_side_projects()
+    })
+
+@app.route("/api/origin3/projects/select", methods=["POST"])
+def api_side_projects_select():
+    global ACTIVE_SIDE_PROJECT_ID
+    data = request.get_json(silent=True) or {}
+    pid = data.get("project_id", "default").strip()
+    available_ids = [p["id"] for p in list_side_projects()]
+    if pid not in available_ids:
+        return jsonify({"success": False, "error": f"Project '{pid}' does not exist"}), 404
+    ACTIVE_SIDE_PROJECT_ID = pid
+    return jsonify({
+        "success": True,
+        "active_id": ACTIVE_SIDE_PROJECT_ID,
+        "projects": list_side_projects()
+    })
+
+@app.route("/api/origin3/projects/delete", methods=["POST"])
+def api_side_projects_delete():
+    data = request.get_json(silent=True) or {}
+    pid = data.get("project_id", "").strip()
+    ok, msg = delete_side_project(pid)
+    if not ok:
+        return jsonify({"success": False, "error": msg}), 400
+    return jsonify({
+        "success": True,
+        "message": msg,
+        "active_id": ACTIVE_SIDE_PROJECT_ID,
+        "projects": list_side_projects()
+    })
+
 @app.route("/api/origin3/annotation/images", methods=["GET"])
 def api_origin3_images():
+    paths = get_side_paths()
     images = []
-    if os.path.exists(ORIGIN3_IMAGES_DIR):
-        for f in sorted(os.listdir(ORIGIN3_IMAGES_DIR)):
+    img_dir = paths["images_dir"]
+    lbl_dir = paths["labels_dir"]
+    os.makedirs(img_dir, exist_ok=True)
+    os.makedirs(lbl_dir, exist_ok=True)
+
+    if os.path.exists(img_dir):
+        for f in sorted(os.listdir(img_dir)):
             if f.lower().endswith((".jpg", ".png", ".jpeg")):
                 stem = os.path.splitext(f)[0]
-                lbl_path = os.path.join(ORIGIN3_LABELS_DIR, f"{stem}.txt")
+                lbl_path = os.path.join(lbl_dir, f"{stem}.txt")
                 labeled = False
                 box_count = 0
                 if os.path.exists(lbl_path) and os.path.getsize(lbl_path) > 0:
-                    with open(lbl_path, "r", encoding="utf-8") as fp:
-                        lines = [l.strip() for l in fp if l.strip()]
-                        box_count = len(lines)
-                        labeled = box_count > 0
+                    try:
+                        with open(lbl_path, "r", encoding="utf-8") as fp:
+                            lines = [l.strip() for l in fp if l.strip()]
+                            box_count = len(lines)
+                            labeled = box_count > 0
+                    except Exception:
+                        pass
                 images.append({"name": f, "labeled": labeled, "box_count": box_count})
-    return jsonify({"images": images})
+    return jsonify({"images": images, "active_project": paths["id"]})
 
 @app.route("/api/origin3/annotation/upload", methods=["POST"])
 def api_origin3_upload():
+    paths = get_side_paths()
+    img_dir = paths["images_dir"]
+    os.makedirs(img_dir, exist_ok=True)
     files = request.files.getlist("files")
     first_name = ""
     for f in files:
         if f.filename:
             safe_name = os.path.basename(f.filename)
-            path = os.path.join(ORIGIN3_IMAGES_DIR, safe_name)
+            path = os.path.join(img_dir, safe_name)
             f.save(path)
             if not first_name:
                 first_name = safe_name
@@ -4581,6 +5479,9 @@ def api_origin3_upload():
 
 @app.route("/api/origin3/annotation/upload_base64", methods=["POST"])
 def api_origin3_upload_base64():
+    paths = get_side_paths()
+    img_dir = paths["images_dir"]
+    os.makedirs(img_dir, exist_ok=True)
     data = request.get_json(silent=True) or {}
     name = data.get("name", f"snap_side_{int(time.time())}.jpg")
     safe_name = os.path.basename(name)
@@ -4588,17 +5489,18 @@ def api_origin3_upload_base64():
     if "," in b64_str:
         b64_str = b64_str.split(",")[1]
     raw_bytes = base64.b64decode(b64_str)
-    with open(os.path.join(ORIGIN3_IMAGES_DIR, safe_name), "wb") as fp:
+    with open(os.path.join(img_dir, safe_name), "wb") as fp:
         fp.write(raw_bytes)
     return jsonify({"success": True, "name": safe_name})
 
 @app.route("/api/origin3/annotation/image_data", methods=["GET"])
 def api_origin3_image_data():
+    paths = get_side_paths()
     img_name = request.args.get("file", "")
     if not img_name:
         return jsonify({"success": False, "error": "file param missing"}), 400
     safe_name = os.path.basename(img_name)
-    img_path = os.path.join(ORIGIN3_IMAGES_DIR, safe_name)
+    img_path = os.path.join(paths["images_dir"], safe_name)
     if not os.path.exists(img_path):
         return jsonify({"success": False, "error": "Image file not found"}), 404
 
@@ -4611,7 +5513,7 @@ def api_origin3_image_data():
 
     bbox = None
     stem = os.path.splitext(safe_name)[0]
-    lbl_path = os.path.join(ORIGIN3_LABELS_DIR, f"{stem}.txt")
+    lbl_path = os.path.join(paths["labels_dir"], f"{stem}.txt")
     if os.path.exists(lbl_path):
         with open(lbl_path, "r", encoding="utf-8") as fp:
             for line in fp:
@@ -4629,6 +5531,7 @@ def api_origin3_image_data():
 
 @app.route("/api/origin3/annotation/save", methods=["POST"])
 def api_origin3_save():
+    paths = get_side_paths()
     data = request.get_json(silent=True) or {}
     img_name = data.get("image_name", "")
     safe_name = os.path.basename(img_name)
@@ -4637,7 +5540,9 @@ def api_origin3_save():
     bbox = data.get("bbox", None)
 
     stem = os.path.splitext(safe_name)[0]
-    lbl_path = os.path.join(ORIGIN3_LABELS_DIR, f"{stem}.txt")
+    lbl_dir = paths["labels_dir"]
+    os.makedirs(lbl_dir, exist_ok=True)
+    lbl_path = os.path.join(lbl_dir, f"{stem}.txt")
 
     if bbox and len(bbox) == 4:
         x1, y1, x2, y2 = bbox
@@ -4663,13 +5568,14 @@ def api_origin3_save():
 
 @app.route("/api/origin3/annotation/delete_image", methods=["POST"])
 def api_origin3_delete_image():
+    paths = get_side_paths()
     data = request.get_json(silent=True) or {}
     img_name = data.get("image_name", "").strip()
     safe_name = os.path.basename(img_name)
     stem = os.path.splitext(safe_name)[0]
 
-    img_p = os.path.join(ORIGIN3_IMAGES_DIR, safe_name)
-    lbl_p = os.path.join(ORIGIN3_LABELS_DIR, f"{stem}.txt")
+    img_p = os.path.join(paths["images_dir"], safe_name)
+    lbl_p = os.path.join(paths["labels_dir"], f"{stem}.txt")
 
     deleted = False
     if os.path.exists(img_p):
@@ -4689,10 +5595,11 @@ def api_origin3_delete_image():
 
 @app.route("/api/origin3/annotation/pre_annotate", methods=["POST"])
 def api_origin3_pre_annotate():
+    paths = get_side_paths()
     data = request.get_json(silent=True) or {}
     img_name = data.get("image_name", "")
     safe_name = os.path.basename(img_name)
-    img_path = os.path.join(ORIGIN3_IMAGES_DIR, safe_name)
+    img_path = os.path.join(paths["images_dir"], safe_name)
     if not os.path.exists(img_path):
         return jsonify({"success": False, "error": "Image file not found"}), 404
 
@@ -4720,14 +5627,17 @@ def api_origin3_pre_annotate():
 
 @app.route("/api/origin3/dataset/stats", methods=["GET"])
 def api_origin3_stats():
+    paths = get_side_paths()
+    img_dir = paths["images_dir"]
+    lbl_dir = paths["labels_dir"]
     total = 0
     labeled = 0
-    if os.path.exists(ORIGIN3_IMAGES_DIR):
-        for f in os.listdir(ORIGIN3_IMAGES_DIR):
+    if os.path.exists(img_dir):
+        for f in os.listdir(img_dir):
             if f.lower().endswith((".jpg", ".png", ".jpeg")):
                 total += 1
                 stem = os.path.splitext(f)[0]
-                lbl_path = os.path.join(ORIGIN3_LABELS_DIR, f"{stem}.txt")
+                lbl_path = os.path.join(lbl_dir, f"{stem}.txt")
                 if os.path.exists(lbl_path) and os.path.getsize(lbl_path) > 0:
                     labeled += 1
     unlabeled = max(0, total - labeled)
@@ -4737,7 +5647,8 @@ def api_origin3_stats():
         "total": total,
         "labeled": labeled,
         "unlabeled": unlabeled,
-        "device": device
+        "device": device,
+        "active_project": paths["id"]
     })
 
 @app.route("/api/origin3/train/start", methods=["POST"])
@@ -4747,7 +5658,7 @@ def api_origin3_train_start():
     batch = int(data.get("batch_size", 8))
     weights = data.get("weights_choice", "best")
 
-    success, msg = origin3_training_mgr.start(epochs=epochs, batch=batch, weights_choice=weights)
+    success, msg = origin3_training_mgr.start(epochs=epochs, batch=batch, weights_choice=weights, project_id=ACTIVE_SIDE_PROJECT_ID)
     if success:
         return jsonify({"success": True, "message": msg})
     return jsonify({"success": False, "error": msg}), 400

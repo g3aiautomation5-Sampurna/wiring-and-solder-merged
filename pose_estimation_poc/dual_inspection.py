@@ -45,6 +45,17 @@ def get_pose_model():
     return _POSE_MODEL
 
 
+def reload_pose_model(weights_path=None):
+    global _POSE_MODEL
+    _POSE_MODEL = None
+    if weights_path and os.path.exists(weights_path):
+        print(f"[DualInspection] Reloading Pose model from custom path: {weights_path}")
+        _POSE_MODEL = YOLO(weights_path)
+        return _POSE_MODEL
+    print("[DualInspection] Reloading Pose model weights...")
+    return get_pose_model()
+
+
 def get_origin3_model():
     global _ORIGIN3_MODEL
     if _ORIGIN3_MODEL is None:
@@ -66,9 +77,13 @@ def get_origin3_model():
     return _ORIGIN3_MODEL
 
 
-def reload_origin3_model():
+def reload_origin3_model(weights_path=None):
     global _ORIGIN3_MODEL
     _ORIGIN3_MODEL = None
+    if weights_path and os.path.exists(weights_path):
+        print(f"[DualInspection] Reloading Origin 3 model from custom path: {weights_path}")
+        _ORIGIN3_MODEL = YOLO(weights_path)
+        return _ORIGIN3_MODEL
     print("[DualInspection] Reloading Origin 3 model weights...")
     return get_origin3_model()
 

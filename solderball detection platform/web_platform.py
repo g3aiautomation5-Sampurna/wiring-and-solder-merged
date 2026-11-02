@@ -52,15 +52,200 @@ MODEL_PATH = os.path.join(MODELS_DIR, 'best_solderball_detector.pt')
 CURRENT_MODEL = None
 MODEL_LOCK = threading.Lock()
 
-def get_or_load_model():
+# ----------------- SOLDER PROJECT MANAGEMENT -----------------
+SOLDER_PROJECTS_DIR = os.path.join(WORKSPACE_DIR, 'projects_solder')
+ACTIVE_SOLDER_PROJECT_ID = 'default'
+os.makedirs(SOLDER_PROJECTS_DIR, exist_ok=True)
+
+
+def get_solder_paths(project_id=None):
+    pid = project_id or ACTIVE_SOLDER_PROJECT_ID
+    if pid == 'default':
+        return {
+            'id': 'default',
+            'is_default': True,
+            'proj_dir': WORKSPACE_DIR,
+            'dataset_dir': DATASET_DIR,
+            'annotations_dir': ANNOTATIONS_DIR,
+            'retrain_img_dir': RETRAIN_IMG_DIR,
+            'retrain_lbl_dir': RETRAIN_LBL_DIR,
+            'data_dir': os.path.join(WORKSPACE_DIR, 'data'),
+            'data_yaml_path': DATA_YAML_PATH,
+            'model_path': MODEL_PATH,
+            'runs_dir': os.path.join(WORKSPACE_DIR, 'runs')
+        }
+    proj_dir = os.path.join(SOLDER_PROJECTS_DIR, pid)
+    return {
+        'id': pid,
+        'is_default': False,
+        'proj_dir': proj_dir,
+        'dataset_dir': os.path.join(proj_dir, 'dataset'),
+        'annotations_dir': os.path.join(proj_dir, 'annotations'),
+        'retrain_img_dir': os.path.join(proj_dir, 'retrain_data', 'images'),
+        'retrain_lbl_dir': os.path.join(proj_dir, 'retrain_data', 'labels'),
+        'data_dir': os.path.join(proj_dir, 'data'),
+        'data_yaml_path': os.path.join(proj_dir, 'data.yaml'),
+        'model_path': os.path.join(proj_dir, 'models', 'best_solderball_detector.pt'),
+        'runs_dir': os.path.join(proj_dir, 'runs')
+    }
+
+
+def list_solder_projects():
+    projects = []
+    def_paths = get_solder_paths('default')
+    def_imgs = glob.glob(os.path.join(def_paths['retrain_img_dir'], '*.*'))
+    projects.append({
+        'id': 'default',
+        'name': 'Default Solder Dataset',
+        'is_default': True,
+        'created_at': 'Pre-loaded',
+        'image_count': len(def_imgs),
+        'has_model': os.path.exists(def_paths['model_path'])
+    })
+    if os.path.exists(SOLDER_PROJECTS_DIR):
+        for p_id in sorted(os.listdir(SOLDER_PROJECTS_DIR)):
+            p_dir = os.path.join(SOLDER_PROJECTS_DIR, p_id)
+            if os.path.isdir(p_dir):
+                meta_file = os.path.join(p_dir, 'project.json')
+                meta = {}
+                if os.path.exists(meta_file):
+                    try:
+                        with open(meta_file, 'r', encoding='utf-8') as mf:
+                            meta = json.load(mf)
+                    except Exception:
+                        pass
+                p_paths = get_solder_paths(p_id)
+                p_imgs = glob.glob(os.path.join(p_paths['retrain_img_dir'], '*.*'))
+                projects.append({
+                    'id': p_id,
+                    'name': meta.get('name', p_id),
+                    'is_default': False,
+                    'created_at': meta.get('created_at', 'Unknown'),
+                    'image_count': len(p_imgs),
+                    'has_model': os.path.exists(p_paths['model_path'])
+                })
+    return projects
+
+
+def create_solder_project(name):
+    global ACTIVE_SOLDER_PROJECT_ID
+    import re
+    clean_name = re.sub(r'[^a-zA-Z0-9_\-\s]', '', name.strip()) or 'Solder_Project'
+    pid = 'solder_' + time.strftime('%Y%m%d_%H%M%S')
+    paths = get_solder_paths(pid)
+    for p in [
+        paths['dataset_dir'],
+        paths['annotations_dir'],
+        paths['retrain_img_dir'],
+        paths['retrain_lbl_dir'],
+        paths['data_dir'],
+        os.path.join(paths['proj_dir'], 'models'),
+        paths['runs_dir']
+    ]:
+        os.makedirs(p, exist_ok=True)
+
+    norm_data_dir = paths['data_dir'].replace('\\', '/')
+    yaml_content = f"# Solder Ball Dataset\npath: {norm_data_dir}\ntrain: images/train\nval: images/val\n\nnames:\n  0: solder_ball\n"
+    with open(paths['data_yaml_path'], 'w', encoding='utf-8') as yf:
+        yf.write(yaml_content)
+
+    meta = {
+        'id': pid,
+        'name': clean_name,
+        'type': 'solder_detection',
+        'created_at': time.strftime('%Y-%m-%d %H:%M:%S')
+    }
+    with open(os.path.join(paths['proj_dir'], 'project.json'), 'w', encoding='utf-8') as mf:
+        json.dump(meta, mf, indent=2)
+
+    ACTIVE_SOLDER_PROJECT_ID = pid
+    return meta
+
+
+def delete_solder_project(pid):
+    global ACTIVE_SOLDER_PROJECT_ID
+    if pid == 'default':
+        return False, 'Cannot delete default project.'
+    p_dir = os.path.join(SOLDER_PROJECTS_DIR, pid)
+    if os.path.exists(p_dir):
+        shutil.rmtree(p_dir, ignore_errors=True)
+    if ACTIVE_SOLDER_PROJECT_ID == pid:
+        ACTIVE_SOLDER_PROJECT_ID = 'default'
+    return True, 'Project deleted.'
+
+
+def split_solder_dataset_internal(paths, val_ratio=0.2, seed=42):
+    import random
+    random.seed(seed)
+    dataset_dir = paths['dataset_dir']
+    ann_dir = paths['annotations_dir']
+    data_dir = paths['data_dir']
+
+    train_img_dir = os.path.join(data_dir, 'images', 'train')
+    val_img_dir = os.path.join(data_dir, 'images', 'val')
+    train_lbl_dir = os.path.join(data_dir, 'labels', 'train')
+    val_lbl_dir = os.path.join(data_dir, 'labels', 'val')
+
+    for d in [train_img_dir, val_img_dir, train_lbl_dir, val_lbl_dir]:
+        os.makedirs(d, exist_ok=True)
+        for f in glob.glob(os.path.join(d, '*')):
+            if os.path.isfile(f):
+                try: os.remove(f)
+                except Exception: pass
+
+    img_files = sorted(glob.glob(os.path.join(dataset_dir, '*.jpg')) +
+                       glob.glob(os.path.join(dataset_dir, '*.png')) +
+                       glob.glob(os.path.join(dataset_dir, '*.jpeg')))
+    pairs = []
+    for img_p in img_files:
+        stem = os.path.splitext(os.path.basename(img_p))[0]
+        lbl_p = os.path.join(ann_dir, f"{stem}.txt")
+        if os.path.exists(lbl_p) and os.path.getsize(lbl_p) > 0:
+            pairs.append((img_p, lbl_p))
+
+    if not pairs:
+        return False, "No labeled images found in project dataset. Please annotate at least one image before retraining."
+
+    random.shuffle(pairs)
+    val_cnt = max(1, int(len(pairs) * val_ratio)) if len(pairs) > 1 else 1
+    val_pairs = pairs[:val_cnt]
+    train_pairs = pairs[val_cnt:] if len(pairs) > 1 else pairs
+
+    for img_p, lbl_p in train_pairs:
+        shutil.copy2(img_p, train_img_dir)
+        shutil.copy2(lbl_p, train_lbl_dir)
+
+    for img_p, lbl_p in val_pairs:
+        shutil.copy2(img_p, val_img_dir)
+        shutil.copy2(lbl_p, val_lbl_dir)
+
+    norm_data_dir = data_dir.replace('\\', '/')
+    yaml_content = f"# Solder Ball Dataset\npath: {norm_data_dir}\ntrain: images/train\nval: images/val\n\nnames:\n  0: solder_ball\n"
+    with open(paths['data_yaml_path'], 'w', encoding='utf-8') as yf:
+        yf.write(yaml_content)
+
+    return True, f"Dataset split complete: {len(train_pairs)} train, {len(val_pairs)} val images."
+
+def get_or_load_model(project_id=None):
     global CURRENT_MODEL
+    paths = get_solder_paths(project_id)
+    model_to_load = paths['model_path'] if os.path.exists(paths['model_path']) else MODEL_PATH
     with MODEL_LOCK:
-        if CURRENT_MODEL is None and os.path.exists(MODEL_PATH):
-            try:
-                CURRENT_MODEL = YOLO(MODEL_PATH)
-            except Exception as e:
-                print(f"Error loading model: {e}")
-                CURRENT_MODEL = None
+        if CURRENT_MODEL is None or getattr(CURRENT_MODEL, '_loaded_path', None) != model_to_load:
+            if os.path.exists(model_to_load):
+                try:
+                    CURRENT_MODEL = YOLO(model_to_load)
+                    CURRENT_MODEL._loaded_path = model_to_load
+                except Exception as e:
+                    print(f"Error loading model {model_to_load}: {e}")
+                    CURRENT_MODEL = None
+            elif os.path.exists(MODEL_PATH):
+                try:
+                    CURRENT_MODEL = YOLO(MODEL_PATH)
+                    CURRENT_MODEL._loaded_path = MODEL_PATH
+                except Exception as e:
+                    print(f"Error loading fallback model: {e}")
+                    CURRENT_MODEL = None
         return CURRENT_MODEL
 
 # Global retraining state
@@ -720,6 +905,26 @@ HTML_TEMPLATE = """
         <section id="view-retrain" class="view-section">
             <!-- Retrain Sidebar -->
             <div class="retrain-sidebar">
+                <!-- Solder Project Workspace Card -->
+                <div class="sidebar-card">
+                    <div class="sidebar-card-title">
+                        <span>Solder Inspection Project</span>
+                        <button class="btn btn-primary" style="padding: 2px 8px; font-size: 11px;" onclick="openNewSolderProjectModal()">+ New Project</button>
+                    </div>
+                    <div style="display: flex; gap: 6px; align-items: center; margin-top: 6px;">
+                        <select id="solderProjectSelect" style="flex: 1; min-width: 0; padding: 6px 8px; font-size: 12px; background: #121316; color: #f0f2f5; border: 1px solid #2e303d; border-radius: 4px; text-overflow: ellipsis; white-space: nowrap; overflow: hidden;" onchange="switchSolderProject(this.value)">
+                            <!-- Populated dynamically -->
+                        </select>
+                        <button id="btnDeleteSolderProject" class="btn btn-danger" style="flex-shrink: 0; padding: 6px 10px; font-size: 12px;" title="Delete Project" onclick="deleteSolderProject()">🗑️</button>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--text-muted); margin-top: 6px;">
+                        <span class="tag-pill" style="background: rgba(0, 136, 255, 0.15); color: #0088ff; border: 1px solid rgba(0, 136, 255, 0.3); white-space: nowrap;">
+                            YOLOv8 &bull; Solder
+                        </span>
+                        <span id="solderProjectBadge" style="color: #cbd5e1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Default Dataset</span>
+                    </div>
+                </div>
+
                 <div class="sidebar-card">
                     <div class="sidebar-card-title">1. Upload Staging Images (10-15)</div>
                     <div class="upload-drop-zone" onclick="document.getElementById('retrain-file-input').click()">
@@ -748,6 +953,14 @@ HTML_TEMPLATE = """
                             <span id="retrain-epochs-val" style="color: var(--primary); font-weight: 700;">20</span>
                         </div>
                         <input type="range" class="slider-input" id="retrain-epochs-slider" min="5" max="50" step="5" value="20" oninput="document.getElementById('retrain-epochs-val').innerText = this.value">
+                    </div>
+
+                    <div style="margin: 8px 0 10px 0;">
+                        <label style="font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px;">Base Weights:</label>
+                        <select id="retrain-weights-select" style="width: 100%; padding: 6px 8px; font-size: 12px; background: #121316; color: #f0f2f5; border: 1px solid #2e303d; border-radius: 4px;">
+                            <option value="nano">Train Fresh from Scratch (yolov8n.pt)</option>
+                            <option value="best">Fine-tune from Project Checkpoint (best.pt)</option>
+                        </select>
                     </div>
 
                     <button id="btn-start-retrain" class="btn btn-success" style="width: 100%; font-size: 14px; padding: 12px;" onclick="startRetraining()">
@@ -845,6 +1058,22 @@ HTML_TEMPLATE = """
         </div>
 
     </main>
+
+    <!-- Modal: New Solderball Project -->
+    <div id="newSolderProjectModal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.75); z-index: 9999; align-items: center; justify-content: center; backdrop-filter: blur(4px);">
+        <div style="background: #1c1d23; border: 1px solid #2e303d; border-radius: 8px; width: 440px; max-width: 90vw; padding: 22px; box-shadow: 0 16px 40px rgba(0,0,0,0.6);">
+            <div style="font-size: 16px; font-weight: 700; color: #f0f2f5; margin-bottom: 6px;">Create New Solder Project</div>
+            <div style="font-size: 12px; color: var(--text-muted); line-height: 1.4; margin-bottom: 16px;">
+                Start with a clean, empty workspace for Solder Ball Inspection. Upload new PCB images, annotate solder balls with clicks or boxes, and retrain a new YOLOv8 detector from scratch.
+            </div>
+            <label style="font-size: 12px; font-weight: 600; color: #f0f2f5; display: block; margin-bottom: 6px;">Project Name:</label>
+            <input type="text" id="newSolderProjectNameInput" placeholder="e.g. Solder Line 2 Batch C" style="width: 100%; box-sizing: border-box; padding: 8px 12px; font-size: 13px; background: #121316; color: #f0f2f5; border: 1px solid #2e303d; border-radius: 4px; margin-bottom: 16px;" onkeydown="if(event.key==='Enter') submitCreateSolderProject()">
+            <div style="display: flex; justify-content: flex-end; gap: 8px;">
+                <button class="btn" onclick="closeNewSolderProjectModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="submitCreateSolderProject()">Create & Open Project</button>
+            </div>
+        </div>
+    </div>
 
     <!-- Hidden canvas for camera snapshot -->
     <canvas id="hidden-snap-canvas" style="display: none;"></canvas>
@@ -1065,12 +1294,177 @@ HTML_TEMPLATE = """
         const retrainCanvas = document.getElementById('retrain-canvas');
         const rCtx = retrainCanvas.getContext('2d');
 
+        // ================= SOLDER PROJECT MANAGEMENT =================
+        let solderProjects = [];
+        let activeSolderProjectId = 'default';
+
+        async function loadSolderProjects() {
+            try {
+                const res = await fetch('/api/retrain/projects');
+                const data = await res.json();
+                activeSolderProjectId = data.active_id || 'default';
+                solderProjects = data.projects || [];
+                renderSolderProjectSelect();
+            } catch (err) {
+                console.error('Error loading solder projects:', err);
+            }
+        }
+
+        function renderSolderProjectSelect() {
+            const sel = document.getElementById('solderProjectSelect');
+            if (!sel) return;
+            sel.innerHTML = '';
+            let currentProj = null;
+
+            solderProjects.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = `${p.name} (${p.image_count} img${p.has_model ? ' • ✓' : ''})`;
+                if (p.id === activeSolderProjectId) {
+                    opt.selected = true;
+                    currentProj = p;
+                }
+                sel.appendChild(opt);
+            });
+
+            const badge = document.getElementById('solderProjectBadge');
+            if (badge && currentProj) {
+                badge.textContent = currentProj.is_default ? 'Default Dataset' : `${currentProj.image_count} imgs`;
+            }
+            const delBtn = document.getElementById('btnDeleteSolderProject');
+            if (delBtn) {
+                const isDef = !currentProj || currentProj.is_default;
+                delBtn.disabled = isDef;
+                delBtn.style.opacity = isDef ? '0.4' : '1.0';
+                delBtn.style.cursor = isDef ? 'not-allowed' : 'pointer';
+            }
+
+            const wSel = document.getElementById('retrain-weights-select');
+            if (wSel) {
+                wSel.innerHTML = `
+                    <option value="nano">Train Fresh from Scratch (yolov8n.pt)</option>
+                    ${(currentProj && currentProj.has_model) ? '<option value="project">Fine-tune Project Model Checkpoint</option>' : ''}
+                    <option value="best">Fine-tune Pre-trained Solder Model (best_solderball_detector.pt)</option>
+                `;
+            }
+        }
+
+        async function switchSolderProject(pid) {
+            if (!pid) return;
+            try {
+                const res = await fetch('/api/retrain/projects/select', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project_id: pid })
+                });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    activeSolderProjectId = data.active_id;
+                    await loadSolderProjects();
+                    currentRetrainIdx = 0;
+                    await fetchRetrainImages();
+                } else {
+                    alert('Failed to switch project: ' + (data.message || 'unknown error'));
+                }
+            } catch (err) {
+                console.error('Error switching solder project:', err);
+            }
+        }
+
+        function openNewSolderProjectModal() {
+            const modal = document.getElementById('newSolderProjectModal');
+            if (modal) {
+                modal.style.display = 'flex';
+                const inp = document.getElementById('newSolderProjectNameInput');
+                if (inp) {
+                    inp.value = '';
+                    setTimeout(() => inp.focus(), 50);
+                }
+            }
+        }
+
+        function closeNewSolderProjectModal() {
+            const modal = document.getElementById('newSolderProjectModal');
+            if (modal) modal.style.display = 'none';
+        }
+
+        async function submitCreateSolderProject() {
+            const inp = document.getElementById('newSolderProjectNameInput');
+            const name = inp ? inp.value.trim() : '';
+            if (!name) {
+                alert('Please enter a project name.');
+                return;
+            }
+            try {
+                const res = await fetch('/api/retrain/projects/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name })
+                });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    closeNewSolderProjectModal();
+                    activeSolderProjectId = data.project.id;
+                    await loadSolderProjects();
+                    currentRetrainIdx = 0;
+                    await fetchRetrainImages();
+                } else {
+                    alert('Error creating project: ' + (data.message || 'unknown error'));
+                }
+            } catch (err) {
+                console.error('Error creating solder project:', err);
+                alert('Failed to create project: ' + err.message);
+            }
+        }
+
+        async function deleteSolderProject() {
+            if (activeSolderProjectId === 'default') {
+                alert('Cannot delete default pre-loaded project.');
+                return;
+            }
+            if (!confirm(`Are you sure you want to permanently delete the active project "${activeSolderProjectId}"? All images and annotations in it will be lost.`)) {
+                return;
+            }
+            try {
+                const res = await fetch('/api/retrain/projects/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project_id: activeSolderProjectId })
+                });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    activeSolderProjectId = data.active_id || 'default';
+                    await loadSolderProjects();
+                    currentRetrainIdx = 0;
+                    await fetchRetrainImages();
+                } else {
+                    alert('Failed to delete project: ' + (data.message || 'unknown error'));
+                }
+            } catch (err) {
+                console.error('Error deleting solder project:', err);
+            }
+        }
+
         async function fetchRetrainImages() {
-            const res = await fetch('/api/retrain/list');
-            retrainImages = await res.json();
-            renderRetrainList();
-            if (retrainImages.length > 0 && currentRetrainIdx < retrainImages.length) {
-                loadRetrainImage(currentRetrainIdx);
+            try {
+                const res = await fetch('/api/retrain/list');
+                retrainImages = await res.json();
+                renderRetrainList();
+                if (retrainImages.length > 0) {
+                    if (currentRetrainIdx < 0 || currentRetrainIdx >= retrainImages.length) {
+                        currentRetrainIdx = 0;
+                    }
+                    loadRetrainImage(currentRetrainIdx);
+                } else {
+                    currentRetrainIdx = -1;
+                    retrainBoxes = [];
+                    currentRetrainImgObj = null;
+                    if (rCtx) rCtx.clearRect(0, 0, retrainCanvas.width, retrainCanvas.height);
+                    const nameEl = document.getElementById('retrain-filename');
+                    if (nameEl) nameEl.innerText = '(No images staged - Empty Project)';
+                }
+            } catch (err) {
+                console.error('Error fetching retrain images:', err);
             }
         }
 
@@ -1079,6 +1473,17 @@ HTML_TEMPLATE = """
             container.innerHTML = '';
             const annotated = retrainImages.filter(i => i.count > 0).length;
             document.getElementById('retrain-progress-badge').innerText = `${annotated} / ${retrainImages.length}`;
+
+            if (retrainImages.length === 0) {
+                container.innerHTML = `
+                    <div style="padding: 24px 12px; text-align: center; color: var(--text-muted); font-size: 12px; background: rgba(255,255,255,0.02); border-radius: 6px; border: 1px dashed #2e303d; margin-top: 6px;">
+                        <div style="font-size: 26px; margin-bottom: 6px;">📂</div>
+                        <div style="font-weight: 600; color: #f0f2f5; margin-bottom: 4px;">Project Dataset Empty</div>
+                        <div style="font-size: 11px; line-height: 1.4;">No images in this project yet.<br>Click <b>Upload 10–15 Images</b> above to stage PCB photos for YOLO annotation.</div>
+                    </div>
+                `;
+                return;
+            }
 
             retrainImages.forEach((img, idx) => {
                 const div = document.createElement('div');
@@ -1364,7 +1769,11 @@ HTML_TEMPLATE = """
             }
 
             const epochs = parseInt(document.getElementById('retrain-epochs-slider').value);
-            if (!confirm(`Start retraining YOLO model with ${annotatedCount} newly annotated images for ${epochs} epochs?`)) {
+            const weightsSelect = document.getElementById('retrain-weights-select');
+            const weightsChoice = weightsSelect ? weightsSelect.value : 'nano';
+            const weightsLabel = weightsChoice === 'nano' ? 'from scratch (yolov8n.pt)' : (weightsChoice === 'project' ? 'using project checkpoint' : 'fine-tuning pre-trained model');
+
+            if (!confirm(`Start retraining YOLO model with ${annotatedCount} newly annotated images for ${epochs} epochs ${weightsLabel}?`)) {
                 return;
             }
 
@@ -1375,7 +1784,7 @@ HTML_TEMPLATE = """
             const res = await fetch('/api/retrain/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ epochs: epochs })
+                body: JSON.stringify({ epochs: epochs, weights_choice: weightsChoice })
             });
             const data = await res.json();
             if (data.status !== 'started') {
@@ -1720,6 +2129,10 @@ HTML_TEMPLATE = """
                 trainPollTimer = setInterval(pollTrainingStatus, 2000);
             }
         }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            loadSolderProjects();
+        });
     </script>
 </body>
 </html>
@@ -1833,43 +2246,99 @@ def detect_solder_balls():
 
 @app.route('/api/sample_images')
 def list_sample_images():
-    files = sorted(glob.glob(os.path.join(DATASET_DIR, '*.jpg')) +
-                   glob.glob(os.path.join(DATASET_DIR, '*.png')))
+    paths = get_solder_paths()
+    files = sorted(glob.glob(os.path.join(paths['dataset_dir'], '*.jpg')) +
+                   glob.glob(os.path.join(paths['dataset_dir'], '*.png')))
+    if not files and not paths['is_default']:
+        def_paths = get_solder_paths('default')
+        files = sorted(glob.glob(os.path.join(def_paths['dataset_dir'], '*.jpg')) +
+                       glob.glob(os.path.join(def_paths['dataset_dir'], '*.png')))
     return jsonify([os.path.basename(f) for f in files[:40]])
 
 @app.route('/api/sample_image/<path:filename>')
 def get_sample_image(filename):
-    fpath = os.path.join(DATASET_DIR, filename)
+    paths = get_solder_paths()
+    fpath = os.path.join(paths['dataset_dir'], filename)
+    if not os.path.exists(fpath):
+        def_paths = get_solder_paths('default')
+        fpath = os.path.join(def_paths['dataset_dir'], filename)
     if os.path.exists(fpath):
         return send_file(fpath)
     return "Not found", 404
+
+# ================= PROJECT MANAGEMENT API =================
+
+@app.route('/api/retrain/projects', methods=['GET'])
+def api_solder_projects_list():
+    return jsonify({
+        'active_id': ACTIVE_SOLDER_PROJECT_ID,
+        'projects': list_solder_projects()
+    })
+
+@app.route('/api/retrain/projects/create', methods=['POST'])
+def api_solder_projects_create():
+    data = request.get_json(silent=True) or {}
+    name = data.get('name', '').strip()
+    if not name:
+        return jsonify({'status': 'error', 'message': 'Project name is required'}), 400
+    meta = create_solder_project(name)
+    return jsonify({'status': 'ok', 'project': meta})
+
+@app.route('/api/retrain/projects/select', methods=['POST'])
+def api_solder_projects_select():
+    global ACTIVE_SOLDER_PROJECT_ID
+    data = request.get_json(silent=True) or {}
+    pid = data.get('project_id', '').strip()
+    if not pid:
+        return jsonify({'status': 'error', 'message': 'Project ID is required'}), 400
+    
+    if pid != 'default':
+        p_dir = os.path.join(SOLDER_PROJECTS_DIR, pid)
+        if not os.path.exists(p_dir):
+            return jsonify({'status': 'error', 'message': 'Project not found'}), 404
+            
+    ACTIVE_SOLDER_PROJECT_ID = pid
+    get_or_load_model(pid)
+    return jsonify({'status': 'ok', 'active_id': ACTIVE_SOLDER_PROJECT_ID})
+
+@app.route('/api/retrain/projects/delete', methods=['POST'])
+def api_solder_projects_delete():
+    data = request.get_json(silent=True) or {}
+    pid = data.get('project_id', '').strip()
+    ok, msg = delete_solder_project(pid)
+    if not ok:
+        return jsonify({'status': 'error', 'message': msg}), 400
+    return jsonify({'status': 'ok', 'message': msg, 'active_id': ACTIVE_SOLDER_PROJECT_ID})
 
 # ================= RETRAINING API =================
 
 @app.route('/api/retrain/upload', methods=['POST'])
 def upload_retrain_images():
+    paths = get_solder_paths()
     uploaded = request.files.getlist('images')
     saved_count = 0
     for f in uploaded:
         if f.filename:
             fname = os.path.basename(f.filename)
-            dst = os.path.join(RETRAIN_IMG_DIR, fname)
+            dst = os.path.join(paths['retrain_img_dir'], fname)
             f.save(dst)
             saved_count += 1
     return jsonify({'status': 'ok', 'count': saved_count})
 
 @app.route('/api/retrain/list')
 def list_retrain_images():
-    files = sorted(glob.glob(os.path.join(RETRAIN_IMG_DIR, '*.jpg')) +
-                   glob.glob(os.path.join(RETRAIN_IMG_DIR, '*.png')))
+    paths = get_solder_paths()
+    files = sorted(glob.glob(os.path.join(paths['retrain_img_dir'], '*.jpg')) +
+                   glob.glob(os.path.join(paths['retrain_img_dir'], '*.png')) +
+                   glob.glob(os.path.join(paths['retrain_img_dir'], '*.jpeg')))
     result = []
     for f in files:
         bname = os.path.basename(f)
         bnoext = os.path.splitext(bname)[0]
-        ann_path = os.path.join(RETRAIN_LBL_DIR, f"{bnoext}.txt")
+        ann_path = os.path.join(paths['retrain_lbl_dir'], f"{bnoext}.txt")
         count = 0
         if os.path.exists(ann_path):
-            with open(ann_path, 'r') as af:
+            with open(ann_path, 'r', encoding='utf-8') as af:
                 lines = [l.strip() for l in af if l.strip()]
                 count = len(lines)
         result.append({'name': bname, 'count': count})
@@ -1877,23 +2346,25 @@ def list_retrain_images():
 
 @app.route('/api/retrain/image/<path:filename>')
 def get_retrain_image(filename):
-    fpath = os.path.join(RETRAIN_IMG_DIR, filename)
+    paths = get_solder_paths()
+    fpath = os.path.join(paths['retrain_img_dir'], filename)
     if os.path.exists(fpath):
         return send_file(fpath)
     return "Not found", 404
 
 @app.route('/api/retrain/annotation/<path:filename>', methods=['GET'])
 def get_retrain_annotation(filename):
+    paths = get_solder_paths()
     bnoext = os.path.splitext(filename)[0]
-    ann_path = os.path.join(RETRAIN_LBL_DIR, f"{bnoext}.txt")
-    img_path = os.path.join(RETRAIN_IMG_DIR, filename)
+    ann_path = os.path.join(paths['retrain_lbl_dir'], f"{bnoext}.txt")
+    img_path = os.path.join(paths['retrain_img_dir'], filename)
 
     boxes = []
     if os.path.exists(ann_path) and os.path.exists(img_path):
         img = cv2.imread(img_path)
         if img is not None:
             ih, iw = img.shape[:2]
-            with open(ann_path, 'r') as f:
+            with open(ann_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     parts = line.strip().split()
                     if len(parts) >= 5:
@@ -1907,9 +2378,10 @@ def get_retrain_annotation(filename):
 
 @app.route('/api/retrain/annotation/<path:filename>', methods=['POST'])
 def save_retrain_annotation(filename):
+    paths = get_solder_paths()
     bnoext = os.path.splitext(filename)[0]
-    ann_path = os.path.join(RETRAIN_LBL_DIR, f"{bnoext}.txt")
-    img_path = os.path.join(RETRAIN_IMG_DIR, filename)
+    ann_path = os.path.join(paths['retrain_lbl_dir'], f"{bnoext}.txt")
+    img_path = os.path.join(paths['retrain_img_dir'], filename)
 
     data = request.json or {}
     boxes = data.get('boxes', [])
@@ -1936,9 +2408,10 @@ def save_retrain_annotation(filename):
 
 @app.route('/api/retrain/image/<path:filename>', methods=['DELETE'])
 def delete_retrain_image(filename):
-    img_path = os.path.join(RETRAIN_IMG_DIR, filename)
+    paths = get_solder_paths()
+    img_path = os.path.join(paths['retrain_img_dir'], filename)
     bnoext = os.path.splitext(filename)[0]
-    ann_path = os.path.join(RETRAIN_LBL_DIR, f"{bnoext}.txt")
+    ann_path = os.path.join(paths['retrain_lbl_dir'], f"{bnoext}.txt")
     if os.path.exists(img_path):
         os.remove(img_path)
     if os.path.exists(ann_path):
@@ -1947,7 +2420,8 @@ def delete_retrain_image(filename):
 
 @app.route('/api/retrain/pre_annotate/<path:filename>')
 def pre_annotate_retrain_image(filename):
-    img_path = os.path.join(RETRAIN_IMG_DIR, filename)
+    paths = get_solder_paths()
+    img_path = os.path.join(paths['retrain_img_dir'], filename)
     if not os.path.exists(img_path):
         return jsonify([])
 
@@ -1970,8 +2444,9 @@ def pre_annotate_retrain_image(filename):
 
 # ================= BACKGROUND RETRAINING WORKER =================
 
-def background_retrain_task(epochs, batch_size):
+def background_retrain_task(epochs, batch_size, weights_choice="nano", project_id=None):
     global training_state, CURRENT_MODEL
+    paths = get_solder_paths(project_id)
 
     training_state['running'] = True
     training_state['completed'] = False
@@ -1980,32 +2455,44 @@ def background_retrain_task(epochs, batch_size):
     training_state['current_epoch'] = 0
     training_state['total_epochs'] = epochs
     training_state['loss'] = 0.0
-    training_state['logs'] = ["Starting active retraining pipeline..."]
+    training_state['logs'] = [f"Starting active retraining pipeline for project '{paths['id']}'..."]
 
     try:
         # 1. Merge retrain images and annotations into dataset/ and annotations/
-        staged_imgs = glob.glob(os.path.join(RETRAIN_IMG_DIR, '*.*'))
+        staged_imgs = glob.glob(os.path.join(paths['retrain_img_dir'], '*.*'))
         merged_count = 0
         for img_f in staged_imgs:
             bname = os.path.basename(img_f)
             bnoext = os.path.splitext(bname)[0]
-            lbl_f = os.path.join(RETRAIN_LBL_DIR, f"{bnoext}.txt")
+            lbl_f = os.path.join(paths['retrain_lbl_dir'], f"{bnoext}.txt")
             if os.path.exists(lbl_f):
-                shutil.copy2(img_f, os.path.join(DATASET_DIR, bname))
-                shutil.copy2(lbl_f, os.path.join(ANNOTATIONS_DIR, f"{bnoext}.txt"))
+                shutil.copy2(img_f, os.path.join(paths['dataset_dir'], bname))
+                shutil.copy2(lbl_f, os.path.join(paths['annotations_dir'], f"{bnoext}.txt"))
                 merged_count += 1
 
-        training_state['logs'].append(f"Merged {merged_count} new annotated images into master dataset.")
+        training_state['logs'].append(f"Merged {merged_count} new annotated images into project dataset.")
 
-        # 2. Run split dataset
+        # 2. Run internal dataset splitter
         training_state['logs'].append("Rebuilding train / validation splits...")
-        split_script = os.path.join(WORKSPACE_DIR, "scripts", "split_dataset.py")
-        subprocess.run([sys.executable, split_script, "--val-ratio", "0.2"], cwd=WORKSPACE_DIR, check=False)
+        ok, msg = split_solder_dataset_internal(paths, val_ratio=0.2)
+        if not ok:
+            raise RuntimeError(msg)
+        training_state['logs'].append(msg)
 
-        # 3. Load model for fine-tuning
-        base_weights = MODEL_PATH if os.path.exists(MODEL_PATH) else os.path.join(WORKSPACE_DIR, 'yolov8n.pt')
-        training_state['logs'].append(f"Fine-tuning model from: {os.path.basename(base_weights)}")
+        # 3. Load model base weights
+        yolo_base = os.path.join(WORKSPACE_DIR, 'yolov8n.pt')
+        if weights_choice == 'project' and os.path.exists(paths['model_path']):
+            base_weights = paths['model_path']
+        elif weights_choice == 'best' and os.path.exists(MODEL_PATH):
+            base_weights = MODEL_PATH
+        elif os.path.exists(paths['model_path']):
+            base_weights = paths['model_path']
+        elif os.path.exists(yolo_base):
+            base_weights = yolo_base
+        else:
+            base_weights = 'yolov8n.pt'
 
+        training_state['logs'].append(f"Base weights: {os.path.basename(base_weights)}")
         model = YOLO(base_weights)
 
         # Callbacks to monitor progress
@@ -2030,31 +2517,37 @@ def background_retrain_task(epochs, batch_size):
         model.add_callback('on_fit_epoch_end', on_fit_epoch_end)
 
         results = model.train(
-            data=DATA_YAML_PATH,
+            data=paths['data_yaml_path'],
             epochs=epochs,
             imgsz=640,
             batch=batch_size,
             device='cpu',
             workers=2,
             patience=10,
+            project=paths['runs_dir'],
             name='solderball_retrain',
             exist_ok=True
         )
 
-        # Copy best weights
+        # Copy best weights to project model path
         best_pt = os.path.join(results.save_dir, 'weights', 'best.pt')
         if os.path.exists(best_pt):
-            shutil.copy2(best_pt, MODEL_PATH)
+            os.makedirs(os.path.dirname(paths['model_path']), exist_ok=True)
+            shutil.copy2(best_pt, paths['model_path'])
+            # If default project, also update MODEL_PATH
+            if paths['is_default']:
+                shutil.copy2(best_pt, MODEL_PATH)
 
         # Hot-reload in memory
         with MODEL_LOCK:
-            CURRENT_MODEL = YOLO(MODEL_PATH)
+            CURRENT_MODEL = YOLO(paths['model_path'])
+            CURRENT_MODEL._loaded_path = paths['model_path']
 
         training_state['model_version'] = time.strftime("%Y-%m-%d %H:%M")
         training_state['progress'] = 100
         training_state['completed'] = True
         training_state['running'] = False
-        training_state['logs'].append("Retraining completed successfully! Model updated.")
+        training_state['logs'].append("Retraining completed successfully! Model hot-reloaded.")
 
     except Exception as e:
         training_state['running'] = False
@@ -2069,8 +2562,10 @@ def start_retrain_api():
     data = request.json or {}
     epochs = int(data.get('epochs', 20))
     batch_size = int(data.get('batch_size', 8))
+    weights_choice = data.get('weights_choice', 'nano')
+    project_id = ACTIVE_SOLDER_PROJECT_ID
 
-    t = threading.Thread(target=background_retrain_task, args=(epochs, batch_size), daemon=True)
+    t = threading.Thread(target=background_retrain_task, args=(epochs, batch_size, weights_choice, project_id), daemon=True)
     t.start()
 
     return jsonify({'status': 'started', 'epochs': epochs})
@@ -2081,6 +2576,7 @@ def get_retrain_status():
 
 @app.route('/api/correction/save', methods=['POST'])
 def save_correction_api():
+    paths = get_solder_paths()
     data = request.json or {}
     image_b64 = data.get('image_b64', '')
     filename = data.get('filename', 'corrected_pcb.jpg')
@@ -2094,8 +2590,8 @@ def save_correction_api():
     target_img_name = f"corr_{base_no_ext}.jpg"
     target_lbl_name = f"corr_{base_no_ext}.txt"
 
-    dst_img_path = os.path.join(RETRAIN_IMG_DIR, target_img_name)
-    dst_lbl_path = os.path.join(RETRAIN_LBL_DIR, target_lbl_name)
+    dst_img_path = os.path.join(paths['retrain_img_dir'], target_img_name)
+    dst_lbl_path = os.path.join(paths['retrain_lbl_dir'], target_lbl_name)
 
     # 1. Save or copy image file
     if image_b64 and ',' in image_b64:
@@ -2105,8 +2601,8 @@ def save_correction_api():
         img_bytes = base64.b64decode(image_b64)
         with open(dst_img_path, 'wb') as f:
             f.write(img_bytes)
-    elif os.path.exists(os.path.join(DATASET_DIR, filename)):
-        shutil.copy2(os.path.join(DATASET_DIR, filename), dst_img_path)
+    elif os.path.exists(os.path.join(paths['dataset_dir'], filename)):
+        shutil.copy2(os.path.join(paths['dataset_dir'], filename), dst_img_path)
 
     # 2. Convert and save normalized YOLO coordinates
     img = cv2.imread(dst_img_path)
@@ -2130,7 +2626,7 @@ def save_correction_api():
     if action == 'retrain_now':
         if not training_state['running']:
             epochs = int(data.get('epochs', 20))
-            t = threading.Thread(target=background_retrain_task, args=(epochs, 8), daemon=True)
+            t = threading.Thread(target=background_retrain_task, args=(epochs, 8, 'nano', ACTIVE_SOLDER_PROJECT_ID), daemon=True)
             t.start()
             return jsonify({'status': 'retraining_started', 'filename': target_img_name, 'count': len(boxes)})
 
