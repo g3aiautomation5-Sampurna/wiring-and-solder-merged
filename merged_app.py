@@ -1,6 +1,6 @@
 """
 Unified Vision Quality Inspection Platform
-Merges Wire Harness Pose Inspection & Solder Ball Detection Platform into a single unified tabbed application.
+Merges Wire Harness Pose Inspection, Solder Ball Detection & Combined All-in-One Inspection into a single unified tabbed application.
 """
 
 import os
@@ -86,6 +86,7 @@ if not getattr(sys, "frozen", False):
 # Import the sub-applications
 import web_app as wiring_app
 import web_platform as solder_app
+import combined_app
 
 # Create master management app
 master_app = Flask("master_suite")
@@ -95,7 +96,7 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vision Quality Inspection Suite &mdash; Wiring & Soldering Platform</title>
+    <title>Vision Quality Inspection Suite &mdash; Wiring &amp; Soldering Platform</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏭</text></svg>">
     <style>
         :root {
@@ -111,6 +112,8 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
             --wire-glow: rgba(59, 130, 246, 0.35);
             --solder-color: #10b981;
             --solder-glow: rgba(16, 185, 129, 0.35);
+            --combined-color: #8b5cf6;
+            --combined-glow: rgba(139, 92, 246, 0.38);
         }
 
         * {
@@ -148,7 +151,7 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
             display: flex;
             align-items: center;
             gap: 10px;
-            min-width: 260px;
+            min-width: 250px;
         }
 
         .master-brand .brand-icon {
@@ -192,7 +195,7 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
 
         .master-tabs-bar {
             display: flex;
-            gap: 8px;
+            gap: 6px;
             background: var(--bg-tab-bar);
             padding: 4px 6px;
             border-radius: 10px;
@@ -204,14 +207,14 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
             background: transparent;
             color: var(--text-muted);
             border: 1px solid transparent;
-            padding: 6px 20px;
+            padding: 6px 16px;
             border-radius: 7px;
             cursor: pointer;
-            font-size: 0.86rem;
+            font-size: 0.84rem;
             font-weight: 700;
             display: flex;
             align-items: center;
-            gap: 9px;
+            gap: 8px;
             transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
             outline: none;
             position: relative;
@@ -236,6 +239,14 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
             color: #6ee7b7;
             border-color: #10b981;
             box-shadow: 0 0 16px var(--solder-glow);
+        }
+
+        /* Combined Active */
+        .master-tab-btn.active.tab-combined {
+            background: #2e1065;
+            color: #d8b4fe;
+            border-color: #8b5cf6;
+            box-shadow: 0 0 16px var(--combined-glow);
         }
 
         .master-tab-btn .tab-icon {
@@ -265,12 +276,18 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
             color: #a7f3d0;
         }
 
+        .master-tab-btn.active.tab-combined .tab-badge {
+            background: rgba(139, 92, 246, 0.22);
+            border-color: #8b5cf6;
+            color: #e9d5ff;
+        }
+
         /* Header Right Controls */
         .master-controls {
             display: flex;
             align-items: center;
             gap: 12px;
-            min-width: 260px;
+            min-width: 250px;
             justify-content: flex-end;
         }
 
@@ -328,7 +345,7 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
             color: #64748b;
             font-family: monospace;
             background: rgba(0, 0, 0, 0.3);
-            padding: 2px 5px;
+            padding: 2px 6px;
             border-radius: 4px;
             border: 1px solid rgba(255, 255, 255, 0.08);
         }
@@ -379,23 +396,28 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
         <!-- Master Utility Tabs (Center) -->
         <div class="master-tabs-wrap">
             <div class="master-tabs-bar" role="tablist">
-                <button class="master-tab-btn active tab-wiring" id="tabBtnWiring" onclick="switchUtility('wiring')" title="Wire Harness Dual Pose & Side Inspection (Alt+1)">
+                <button class="master-tab-btn active tab-wiring" id="tabBtnWiring" onclick="switchUtility('wiring')" title="Wire Harness Dual Pose &amp; Side Inspection (Alt+1)">
                     <span class="tab-icon">🔌</span>
                     <span>Wiring Inspection</span>
-                    <span class="tab-badge">Dual Pose & Side</span>
+                    <span class="tab-badge">Dual Pose &amp; Side</span>
                 </button>
-                <button class="master-tab-btn tab-soldering" id="tabBtnSoldering" onclick="switchUtility('soldering')" title="Solder Ball Detection, Counting & Retraining (Alt+2)">
+                <button class="master-tab-btn tab-soldering" id="tabBtnSoldering" onclick="switchUtility('soldering')" title="Solder Ball Detection, Counting &amp; Retraining (Alt+2)">
                     <span class="tab-icon">🔬</span>
                     <span>Soldering Inspection</span>
                     <span class="tab-badge">Detector Model</span>
+                </button>
+                <button class="master-tab-btn tab-combined" id="tabBtnCombined" onclick="switchUtility('combined')" title="All-in-One Dual Wiring &amp; Solder Ball Inspection (Alt+3)">
+                    <span class="tab-icon">⚡</span>
+                    <span>Combined Inspection</span>
+                    <span class="tab-badge">Top + Side + Solder</span>
                 </button>
             </div>
         </div>
 
         <!-- Header Right Controls -->
         <div class="master-controls">
-            <span class="shortcut-hint" title="Keyboard Shortcuts: Alt+1 for Wiring, Alt+2 for Soldering">Alt + 1 / 2</span>
-            <div class="system-pill" title="Both Inspection Utilities Active and Ready">
+            <span class="shortcut-hint" title="Keyboard Shortcuts: Alt+1 for Wiring, Alt+2 for Soldering, Alt+3 for Combined">Alt + 1 / 2 / 3</span>
+            <div class="system-pill" title="All Inspection Utilities Active and Ready">
                 <div class="pulse-dot"></div>
                 <span>Platform Ready</span>
             </div>
@@ -416,26 +438,35 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
         <div id="viewSoldering" class="utility-view">
             <iframe id="frameSoldering" class="utility-frame" src="/soldering" allow="camera; microphone; autoplay; fullscreen"></iframe>
         </div>
+
+        <!-- Utility 3: Combined All-in-One Platform -->
+        <div id="viewCombined" class="utility-view">
+            <iframe id="frameCombined" class="utility-frame" src="/combined" allow="camera; microphone; autoplay; fullscreen"></iframe>
+        </div>
     </main>
 
     <script>
         let currentUtility = 'wiring';
 
         function switchUtility(util) {
-            if (util !== 'wiring' && util !== 'soldering') return;
+            if (util !== 'wiring' && util !== 'soldering' && util !== 'combined') return;
             currentUtility = util;
 
             // Update Tab Buttons
             const btnWiring = document.getElementById('tabBtnWiring');
             const btnSoldering = document.getElementById('tabBtnSoldering');
+            const btnCombined = document.getElementById('tabBtnCombined');
             btnWiring.classList.toggle('active', util === 'wiring');
             btnSoldering.classList.toggle('active', util === 'soldering');
+            btnCombined.classList.toggle('active', util === 'combined');
 
             // Update View Containers
             const viewWiring = document.getElementById('viewWiring');
             const viewSoldering = document.getElementById('viewSoldering');
+            const viewCombined = document.getElementById('viewCombined');
             viewWiring.classList.toggle('active', util === 'wiring');
             viewSoldering.classList.toggle('active', util === 'soldering');
+            viewCombined.classList.toggle('active', util === 'combined');
 
             // Save preference to localStorage and URL hash
             try {
@@ -444,7 +475,7 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
             } catch (e) {}
         }
 
-        // Keyboard navigation: Alt+1 (Wiring), Alt+2 (Soldering)
+        // Keyboard navigation: Alt+1 (Wiring), Alt+2 (Soldering), Alt+3 (Combined)
         window.addEventListener('keydown', (e) => {
             if (e.altKey && e.key === '1') {
                 e.preventDefault();
@@ -452,20 +483,25 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
             } else if (e.altKey && e.key === '2') {
                 e.preventDefault();
                 switchUtility('soldering');
+            } else if (e.altKey && e.key === '3') {
+                e.preventDefault();
+                switchUtility('combined');
             }
         });
 
         // Restore tab on load
         window.addEventListener('DOMContentLoaded', () => {
             let initial = 'wiring';
-            if (window.location.hash === '#soldering') {
+            if (window.location.hash === '#combined') {
+                initial = 'combined';
+            } else if (window.location.hash === '#soldering') {
                 initial = 'soldering';
             } else if (window.location.hash === '#wiring') {
                 initial = 'wiring';
             } else {
                 try {
                     const saved = localStorage.getItem('aoi_active_utility');
-                    if (saved === 'soldering' || saved === 'wiring') initial = saved;
+                    if (saved === 'combined' || saved === 'soldering' || saved === 'wiring') initial = saved;
                 } catch (e) {}
             }
             switchUtility(initial);
@@ -483,18 +519,10 @@ MASTER_HTML_TEMPLATE = """<!DOCTYPE html>
             }
         }
 
-        // ==========================================
-        // STOP MERGED UTILITY WHEN LEAVING
-        // ==========================================
-
+        // Stop Merged Utility when leaving
         window.addEventListener('pagehide', function () {
-
             console.log("Leaving Vision Quality Inspection Suite.");
-
-            navigator.sendBeacon(
-                "http://127.0.0.1:8000/api/pcb/shutdown"
-            );
-
+            navigator.sendBeacon("http://127.0.0.1:8000/api/pcb/shutdown");
         });
     </script>
 </body>
@@ -509,7 +537,7 @@ def index():
 def application(environ, start_response):
     path = environ.get("PATH_INFO", "")
 
-    # Direct page rendering for Wiring & Soldering
+    # Direct page rendering for Wiring, Soldering & Combined
     if path == "/wiring":
         env = dict(environ)
         env["PATH_INFO"] = "/"
@@ -519,6 +547,15 @@ def application(environ, start_response):
         env = dict(environ)
         env["PATH_INFO"] = "/"
         return solder_app.app(env, start_response)
+
+    elif path == "/combined":
+        env = dict(environ)
+        env["PATH_INFO"] = "/"
+        return combined_app.app(env, start_response)
+
+    # Route Combined API requests to combined_app
+    elif path.startswith("/api/combined"):
+        return combined_app.app(environ, start_response)
 
     # Route Solderball API requests to solder_app
     elif path.startswith((
@@ -570,6 +607,7 @@ def main():
     print(f"  Master Dashboard URL: http://localhost:{args.port}")
     print(f"  Direct Wiring URL:    http://localhost:{args.port}/wiring")
     print(f"  Direct Soldering URL: http://localhost:{args.port}/soldering")
+    print(f"  Direct Combined URL:  http://localhost:{args.port}/combined")
     print("=" * 70 + "\n")
 
     if not args.no_browser:

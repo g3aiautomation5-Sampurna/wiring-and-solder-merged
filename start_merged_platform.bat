@@ -12,6 +12,7 @@ echo.
 echo Tips:
 echo   - Click 'Wiring Inspection' or press Alt+1 for Wire Harness Verification
 echo   - Click 'Soldering Inspection' or press Alt+2 for Solder Ball Detection
+echo   - Click 'Combined Inspection' or press Alt+3 for All-in-One Dual Wiring + Solder Ball Detection
 echo.
 python merged_app.py --port 5000
 pause

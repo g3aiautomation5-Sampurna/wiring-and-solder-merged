@@ -1,8 +1,8 @@
 task: detect
 mode: train
-model: yolov8n.pt
-data: C:\Users\SM 461\Desktop\side wiring model\yolo_dataset\data.yaml
-epochs: 40
+model: C:\Users\SM 461\Desktop\merged utility\pose_estimation_poc\runs\origin3_model\weights\best.pt
+data: C:\Users\SM 461\Desktop\merged utility\pose_estimation_poc\origin3_dataset\yolo_dataset\data.yaml
+epochs: 30
 time: null
 patience: 100
 batch: 8
@@ -12,13 +12,13 @@ save_period: -1
 cache: false
 device: cpu
 workers: 0
-project: C:\Users\SM 461\Desktop\side wiring model\runs
+project: C:\Users\SM 461\Desktop\merged utility\pose_estimation_poc\runs
 name: origin3_model
 exist_ok: true
 pretrained: true
 cls_remap: true
 optimizer: auto
-verbose: true
+verbose: false
 seed: 0
 deterministic: true
 single_cls: false
@@ -113,4 +113,4 @@ auto_augment: randaugment
 erasing: 0.4
 cfg: null
 tracker: tracktrack.yaml
-save_dir: C:\Users\SM 461\Desktop\side wiring model\runs\origin3_model
+save_dir: C:\Users\SM 461\Desktop\merged utility\pose_estimation_poc\runs\origin3_model
