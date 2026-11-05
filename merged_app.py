@@ -79,7 +79,9 @@ def auto_heal_yaml_paths():
         except Exception as e:
             print(f"[WARN] Could not update Origin 3 data.yaml path: {e}")
 
-auto_heal_yaml_paths()
+# Packaged mode uses the writable application data directories.
+if not getattr(sys, "frozen", False):
+    auto_heal_yaml_paths()
 
 # Import the sub-applications
 import web_app as wiring_app

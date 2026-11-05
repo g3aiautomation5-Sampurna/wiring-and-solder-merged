@@ -36,25 +36,106 @@ from ultralytics import YOLO
 
 app = Flask(__name__)
 
-WORKSPACE_DIR = os.path.abspath(os.path.dirname(__file__))
-DATASET_DIR = os.path.join(WORKSPACE_DIR, 'dataset')
-ANNOTATIONS_DIR = os.path.join(WORKSPACE_DIR, 'annotations')
-MODELS_DIR = os.path.join(WORKSPACE_DIR, 'models')
-RETRAIN_IMG_DIR = os.path.join(WORKSPACE_DIR, 'retrain_data', 'images')
-RETRAIN_LBL_DIR = os.path.join(WORKSPACE_DIR, 'retrain_data', 'labels')
-DATA_YAML_PATH = os.path.join(WORKSPACE_DIR, 'data.yaml')
+# WORKSPACE_DIR = os.path.abspath(os.path.dirname(__file__))
+# DATASET_DIR = os.path.join(WORKSPACE_DIR, 'dataset')
+# ANNOTATIONS_DIR = os.path.join(WORKSPACE_DIR, 'annotations')
+# MODELS_DIR = os.path.join(WORKSPACE_DIR, 'models')
+# RETRAIN_IMG_DIR = os.path.join(WORKSPACE_DIR, 'retrain_data', 'images')
+# RETRAIN_LBL_DIR = os.path.join(WORKSPACE_DIR, 'retrain_data', 'labels')
+# DATA_YAML_PATH = os.path.join(WORKSPACE_DIR, 'data.yaml')
 
+# os.makedirs(MODELS_DIR, exist_ok=True)
+# os.makedirs(RETRAIN_IMG_DIR, exist_ok=True)
+# os.makedirs(RETRAIN_LBL_DIR, exist_ok=True)
+
+# MODEL_PATH = os.path.join(MODELS_DIR, 'best_solderball_detector.pt')
+# CURRENT_MODEL = None
+# MODEL_LOCK = threading.Lock()
+
+# # ----------------- SOLDER PROJECT MANAGEMENT -----------------
+# SOLDER_PROJECTS_DIR = os.path.join(WORKSPACE_DIR, 'projects_solder')
+# ACTIVE_SOLDER_PROJECT_ID = 'default'
+# os.makedirs(SOLDER_PROJECTS_DIR, exist_ok=True)
+
+# ----------------- APPLICATION RESOURCE & DATA PATHS -----------------
+
+# Bundled application resources (read-only when packaged)
+WORKSPACE_DIR = os.path.abspath(os.path.dirname(__file__))
+SAMPLE_DATASET_DIR = os.path.join(WORKSPACE_DIR, "dataset")
+BUNDLED_ANNOTATIONS_DIR = os.path.join(WORKSPACE_DIR, "annotations")
+BUNDLED_MODELS_DIR = os.path.join(WORKSPACE_DIR, "models")
+
+BUNDLED_RETRAIN_IMG_DIR = os.path.join(
+    WORKSPACE_DIR, "retrain_data", "images"
+)
+BUNDLED_RETRAIN_LBL_DIR = os.path.join(
+    WORKSPACE_DIR, "retrain_data", "labels"
+)
+
+# Writable application data directory
+if getattr(sys, "frozen", False):
+    DATA_DIR = os.path.join(
+        os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+        "QualityInspection",
+        "PCB",
+        "solderball_detection_platform"
+    )
+else:
+    # Preserve the existing development environment
+    DATA_DIR = WORKSPACE_DIR
+
+DATASET_DIR = os.path.join(DATA_DIR, "dataset")
+ANNOTATIONS_DIR = os.path.join(DATA_DIR, "annotations")
+MODELS_DIR = os.path.join(DATA_DIR, "models")
+RETRAIN_IMG_DIR = os.path.join(DATA_DIR, "retrain_data", "images")
+RETRAIN_LBL_DIR = os.path.join(DATA_DIR, "retrain_data", "labels")
+DATA_YAML_PATH = os.path.join(DATA_DIR, "data.yaml")
+
+os.makedirs(DATASET_DIR, exist_ok=True)
+os.makedirs(ANNOTATIONS_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
 os.makedirs(RETRAIN_IMG_DIR, exist_ok=True)
 os.makedirs(RETRAIN_LBL_DIR, exist_ok=True)
 
-MODEL_PATH = os.path.join(MODELS_DIR, 'best_solderball_detector.pt')
+def copy_missing_files(source_dir, destination_dir):
+    if not os.path.isdir(source_dir):
+        return
+
+    for root, dirs, files in os.walk(source_dir):
+        relative_path = os.path.relpath(root, source_dir)
+
+        if relative_path == ".":
+            target_dir = destination_dir
+        else:
+            target_dir = os.path.join(destination_dir, relative_path)
+
+        os.makedirs(target_dir, exist_ok=True)
+
+        for filename in files:
+            source_file = os.path.join(root, filename)
+            destination_file = os.path.join(target_dir, filename)
+
+            # Never overwrite existing user data
+            if not os.path.exists(destination_file):
+                shutil.copy2(source_file, destination_file)
+
+
+# Copy bundled seed data only when running as a packaged application
+if getattr(sys, "frozen", False):
+    copy_missing_files(SAMPLE_DATASET_DIR, DATASET_DIR)
+    copy_missing_files(BUNDLED_ANNOTATIONS_DIR, ANNOTATIONS_DIR)
+    copy_missing_files(BUNDLED_MODELS_DIR, MODELS_DIR)
+    copy_missing_files(BUNDLED_RETRAIN_IMG_DIR, RETRAIN_IMG_DIR)
+    copy_missing_files(BUNDLED_RETRAIN_LBL_DIR, RETRAIN_LBL_DIR)
+
+    
+MODEL_PATH = os.path.join(MODELS_DIR, "best_solderball_detector.pt")
 CURRENT_MODEL = None
 MODEL_LOCK = threading.Lock()
 
 # ----------------- SOLDER PROJECT MANAGEMENT -----------------
-SOLDER_PROJECTS_DIR = os.path.join(WORKSPACE_DIR, 'projects_solder')
-ACTIVE_SOLDER_PROJECT_ID = 'default'
+SOLDER_PROJECTS_DIR = os.path.join(DATA_DIR, "projects_solder")
+ACTIVE_SOLDER_PROJECT_ID = "default"
 os.makedirs(SOLDER_PROJECTS_DIR, exist_ok=True)
 
 
@@ -64,15 +145,15 @@ def get_solder_paths(project_id=None):
         return {
             'id': 'default',
             'is_default': True,
-            'proj_dir': WORKSPACE_DIR,
+            'proj_dir': DATA_DIR,
             'dataset_dir': DATASET_DIR,
             'annotations_dir': ANNOTATIONS_DIR,
             'retrain_img_dir': RETRAIN_IMG_DIR,
             'retrain_lbl_dir': RETRAIN_LBL_DIR,
-            'data_dir': os.path.join(WORKSPACE_DIR, 'data'),
+            'data_dir': os.path.join(DATA_DIR, 'data'),
             'data_yaml_path': DATA_YAML_PATH,
             'model_path': MODEL_PATH,
-            'runs_dir': os.path.join(WORKSPACE_DIR, 'runs')
+            'runs_dir': os.path.join(DATA_DIR, 'runs')
         }
     proj_dir = os.path.join(SOLDER_PROJECTS_DIR, pid)
     return {
@@ -2244,26 +2325,44 @@ def detect_solder_balls():
         'annotated_b64': annotated_b64
     })
 
+# @app.route('/api/sample_images')
+# def list_sample_images():
+#     paths = get_solder_paths()
+#     files = sorted(glob.glob(os.path.join(paths['dataset_dir'], '*.jpg')) +
+#                    glob.glob(os.path.join(paths['dataset_dir'], '*.png')))
+#     if not files and not paths['is_default']:
+#         def_paths = get_solder_paths('default')
+#         files = sorted(glob.glob(os.path.join(def_paths['dataset_dir'], '*.jpg')) +
+#                        glob.glob(os.path.join(def_paths['dataset_dir'], '*.png')))
+#     return jsonify([os.path.basename(f) for f in files[:40]])
+
 @app.route('/api/sample_images')
 def list_sample_images():
-    paths = get_solder_paths()
-    files = sorted(glob.glob(os.path.join(paths['dataset_dir'], '*.jpg')) +
-                   glob.glob(os.path.join(paths['dataset_dir'], '*.png')))
-    if not files and not paths['is_default']:
-        def_paths = get_solder_paths('default')
-        files = sorted(glob.glob(os.path.join(def_paths['dataset_dir'], '*.jpg')) +
-                       glob.glob(os.path.join(def_paths['dataset_dir'], '*.png')))
+    files = sorted(
+        glob.glob(os.path.join(SAMPLE_DATASET_DIR, '*.jpg')) +
+        glob.glob(os.path.join(SAMPLE_DATASET_DIR, '*.png'))
+    )
     return jsonify([os.path.basename(f) for f in files[:40]])
+
+# @app.route('/api/sample_image/<path:filename>')
+# def get_sample_image(filename):
+#     paths = get_solder_paths()
+#     fpath = os.path.join(paths['dataset_dir'], filename)
+#     if not os.path.exists(fpath):
+#         def_paths = get_solder_paths('default')
+#         fpath = os.path.join(def_paths['dataset_dir'], filename)
+#     if os.path.exists(fpath):
+#         return send_file(fpath)
+#     return "Not found", 404
 
 @app.route('/api/sample_image/<path:filename>')
 def get_sample_image(filename):
-    paths = get_solder_paths()
-    fpath = os.path.join(paths['dataset_dir'], filename)
-    if not os.path.exists(fpath):
-        def_paths = get_solder_paths('default')
-        fpath = os.path.join(def_paths['dataset_dir'], filename)
+    # Load sample images from the bundled dataset folder
+    fpath = os.path.join(SAMPLE_DATASET_DIR, filename)
+
     if os.path.exists(fpath):
         return send_file(fpath)
+
     return "Not found", 404
 
 # ================= PROJECT MANAGEMENT API =================
