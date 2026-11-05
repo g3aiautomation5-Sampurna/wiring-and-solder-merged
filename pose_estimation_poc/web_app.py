@@ -33,25 +33,112 @@ app = Flask(__name__)
 # Global model instance
 MODEL = None
 MODEL_NAME = "best.pt"
+# SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# DATA_YAML_PATH = os.path.join(SCRIPT_DIR, "data.yaml")
+# COLORS_PATH = os.path.join(SCRIPT_DIR, "class_colors.json")
+
+# # Default Origin 3 Side Model dataset paths
+# ORIGIN3_DATASET_DIR = os.path.join(SCRIPT_DIR, "origin3_dataset")
+# ORIGIN3_IMAGES_DIR = os.path.join(ORIGIN3_DATASET_DIR, "images")
+# ORIGIN3_LABELS_DIR = os.path.join(ORIGIN3_DATASET_DIR, "labels")
+# ORIGIN3_YOLO_DIR = os.path.join(ORIGIN3_DATASET_DIR, "yolo_dataset")
+# ORIGIN3_YAML_PATH = os.path.join(ORIGIN3_YOLO_DIR, "data.yaml")
+# os.makedirs(ORIGIN3_IMAGES_DIR, exist_ok=True)
+# os.makedirs(ORIGIN3_LABELS_DIR, exist_ok=True)
+
+# # ----------------- PROJECT MANAGEMENT DIRECTORIES & STATE -----------------
+# TOP_PROJECTS_DIR = os.path.join(SCRIPT_DIR, "projects_top_pose")
+# ACTIVE_TOP_PROJECT_ID = "default"
+# os.makedirs(TOP_PROJECTS_DIR, exist_ok=True)
+
+# SIDE_PROJECTS_DIR = os.path.join(SCRIPT_DIR, "projects_side_detection")
+# ACTIVE_SIDE_PROJECT_ID = "default"
+# os.makedirs(SIDE_PROJECTS_DIR, exist_ok=True)
+
+# ----------------- APPLICATION RESOURCE & DATA PATHS -----------------
+
+# Bundled application resources (read-only when packaged)
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_YAML_PATH = os.path.join(SCRIPT_DIR, "data.yaml")
-COLORS_PATH = os.path.join(SCRIPT_DIR, "class_colors.json")
+
+# Writable application data directory
+if getattr(sys, "frozen", False):
+    DATA_DIR = os.path.join(
+        os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+        "QualityInspection",
+        "PCB",
+        "pose_estimation_poc"
+    )
+else:
+    # Preserve the existing development environment
+    DATA_DIR = SCRIPT_DIR
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def copy_missing_files(source_dir, destination_dir):
+    if not os.path.isdir(source_dir):
+        return
+
+    for root, dirs, files in os.walk(source_dir):
+        relative_path = os.path.relpath(root, source_dir)
+        target_dir = (
+            destination_dir
+            if relative_path == "."
+            else os.path.join(destination_dir, relative_path)
+        )
+
+        os.makedirs(target_dir, exist_ok=True)
+
+        for filename in files:
+            source_file = os.path.join(root, filename)
+            destination_file = os.path.join(target_dir, filename)
+
+            # Never overwrite existing user data
+            if not os.path.exists(destination_file):
+                shutil.copy2(source_file, destination_file)
+
+
+DATA_YAML_PATH = os.path.join(DATA_DIR, "data.yaml")
+COLORS_PATH = os.path.join(DATA_DIR, "class_colors.json")
 
 # Default Origin 3 Side Model dataset paths
-ORIGIN3_DATASET_DIR = os.path.join(SCRIPT_DIR, "origin3_dataset")
+ORIGIN3_DATASET_DIR = os.path.join(DATA_DIR, "origin3_dataset")
 ORIGIN3_IMAGES_DIR = os.path.join(ORIGIN3_DATASET_DIR, "images")
 ORIGIN3_LABELS_DIR = os.path.join(ORIGIN3_DATASET_DIR, "labels")
 ORIGIN3_YOLO_DIR = os.path.join(ORIGIN3_DATASET_DIR, "yolo_dataset")
 ORIGIN3_YAML_PATH = os.path.join(ORIGIN3_YOLO_DIR, "data.yaml")
+
 os.makedirs(ORIGIN3_IMAGES_DIR, exist_ok=True)
 os.makedirs(ORIGIN3_LABELS_DIR, exist_ok=True)
 
+# Copy only required default data into writable application storage
+if getattr(sys, "frozen", False):
+
+    # Default Top Pose resources
+    for filename in ("data.yaml", "class_colors.json"):
+        source = os.path.join(SCRIPT_DIR, filename)
+        destination = os.path.join(DATA_DIR, filename)
+
+        if os.path.isfile(source) and not os.path.exists(destination):
+            shutil.copy2(source, destination)
+
+    # Default Top Pose dataset
+    copy_missing_files(
+        os.path.join(SCRIPT_DIR, "dataset"),
+        os.path.join(DATA_DIR, "dataset")
+    )
+
+    # Default Origin 3 dataset
+    copy_missing_files(
+        os.path.join(SCRIPT_DIR, "origin3_dataset"),
+        os.path.join(DATA_DIR, "origin3_dataset")
+    )
+
 # ----------------- PROJECT MANAGEMENT DIRECTORIES & STATE -----------------
-TOP_PROJECTS_DIR = os.path.join(SCRIPT_DIR, "projects_top_pose")
+TOP_PROJECTS_DIR = os.path.join(DATA_DIR, "projects_top_pose")
 ACTIVE_TOP_PROJECT_ID = "default"
 os.makedirs(TOP_PROJECTS_DIR, exist_ok=True)
 
-SIDE_PROJECTS_DIR = os.path.join(SCRIPT_DIR, "projects_side_detection")
+SIDE_PROJECTS_DIR = os.path.join(DATA_DIR, "projects_side_detection")
 ACTIVE_SIDE_PROJECT_ID = "default"
 os.makedirs(SIDE_PROJECTS_DIR, exist_ok=True)
 
@@ -62,17 +149,17 @@ def get_top_paths(project_id=None):
         return {
             "id": "default",
             "is_default": True,
-            "proj_dir": SCRIPT_DIR,
-            "dataset_dir": os.path.join(SCRIPT_DIR, "dataset"),
+            "proj_dir": DATA_DIR,
+            "dataset_dir": os.path.join(DATA_DIR, "dataset"),
             "yaml_path": DATA_YAML_PATH,
             "colors_path": COLORS_PATH,
-            "images_raw": os.path.join(SCRIPT_DIR, "dataset", "images", "raw"),
-            "images_train": os.path.join(SCRIPT_DIR, "dataset", "images", "train"),
-            "images_val": os.path.join(SCRIPT_DIR, "dataset", "images", "val"),
-            "labels_train": os.path.join(SCRIPT_DIR, "dataset", "labels", "train"),
-            "labels_val": os.path.join(SCRIPT_DIR, "dataset", "labels", "val"),
-            "runs_dir": os.path.join(SCRIPT_DIR, "runs"),
-            "best_weights": os.path.join(SCRIPT_DIR, "runs", "wire_pose_model", "weights", "best.pt")
+            "images_raw": os.path.join(DATA_DIR, "dataset", "images", "raw"),
+            "images_train": os.path.join(DATA_DIR, "dataset", "images", "train"),
+            "images_val": os.path.join(DATA_DIR, "dataset", "images", "val"),
+            "labels_train": os.path.join(DATA_DIR, "dataset", "labels", "train"),
+            "labels_val": os.path.join(DATA_DIR, "dataset", "labels", "val"),
+            "runs_dir": os.path.join(DATA_DIR, "runs"),
+            "best_weights": os.path.join(DATA_DIR, "runs", "wire_pose_model", "weights", "best.pt")
         }
     proj_dir = os.path.join(TOP_PROJECTS_DIR, pid)
     dataset_dir = os.path.join(proj_dir, "dataset")
@@ -199,13 +286,13 @@ def get_side_paths(project_id=None):
         return {
             "id": "default",
             "is_default": True,
-            "proj_dir": SCRIPT_DIR,
+            "proj_dir": DATA_DIR,
             "images_dir": ORIGIN3_IMAGES_DIR,
             "labels_dir": ORIGIN3_LABELS_DIR,
             "yolo_dir": ORIGIN3_YOLO_DIR,
             "yaml_path": ORIGIN3_YAML_PATH,
-            "runs_dir": os.path.join(SCRIPT_DIR, "runs"),
-            "best_weights": os.path.join(SCRIPT_DIR, "runs", "origin3_model", "weights", "best.pt")
+            "runs_dir": os.path.join(DATA_DIR, "runs"),
+            "best_weights": os.path.join(DATA_DIR, "runs", "origin3_model", "weights", "best.pt")
         }
     proj_dir = os.path.join(SIDE_PROJECTS_DIR, pid)
     yolo_dir = os.path.join(proj_dir, "yolo_dataset")
@@ -308,7 +395,7 @@ DEFAULT_PALETTE = [
 def get_model():
     global MODEL, MODEL_NAME
     if MODEL is None:
-        weights_path = os.path.join(SCRIPT_DIR, "runs", "wire_pose_model", "weights", "best.pt")
+        weights_path = os.path.join(DATA_DIR, "runs", "wire_pose_model", "weights", "best.pt")
         if not os.path.exists(weights_path):
             weights_path = os.path.join(SCRIPT_DIR, "yolov8n-pose.pt")
         MODEL_NAME = os.path.basename(weights_path)
@@ -316,9 +403,22 @@ def get_model():
         MODEL = YOLO(weights_path)
     return MODEL
 
-def reload_model_after_training():
+# def reload_model_after_training():
+#     global MODEL, MODEL_NAME
+#     weights_path = os.path.join(DATA_DIR, "runs", "wire_pose_model", "weights", "best.pt")
+#     if os.path.exists(weights_path):
+#         MODEL = YOLO(weights_path)
+#         MODEL_NAME = "best.pt (Retrained)"
+#         print(f"Model successfully hot-reloaded: {weights_path}")
+
+def reload_model_after_training(weights_path=None):
     global MODEL, MODEL_NAME
-    weights_path = os.path.join(SCRIPT_DIR, "runs", "wire_pose_model", "weights", "best.pt")
+
+    if not weights_path:
+        weights_path = os.path.join(
+            DATA_DIR, "runs", "wire_pose_model", "weights", "best.pt"
+        )
+
     if os.path.exists(weights_path):
         MODEL = YOLO(weights_path)
         MODEL_NAME = "best.pt (Retrained)"
@@ -646,11 +746,17 @@ class Origin3TrainingManager:
                 base_model_path = best_weights
                 self.log(f"Fine-tuning from existing project model: {os.path.basename(best_weights)}")
             else:
+                # base_model_path = os.path.join(SCRIPT_DIR, "yolov8n.pt")
+                # if not os.path.exists(base_model_path):
+                #     base_model_path = os.path.join(os.path.dirname(SCRIPT_DIR), "yolov8n.pt")
+                # if not os.path.exists(base_model_path):
+                #     base_model_path = "yolov8n.pt"
                 base_model_path = os.path.join(SCRIPT_DIR, "yolov8n.pt")
-                if not os.path.exists(base_model_path):
-                    base_model_path = os.path.join(os.path.dirname(SCRIPT_DIR), "yolov8n.pt")
-                if not os.path.exists(base_model_path):
-                    base_model_path = "yolov8n.pt"
+
+                if not os.path.isfile(base_model_path):
+                    raise FileNotFoundError(
+                        f"Base Origin 3 model not found: {base_model_path}"
+                    )
                 self.log(f"Training from base nano weights (from scratch): {os.path.basename(base_model_path)}")
 
             self.log(f"Loading YOLO model: {base_model_path}")

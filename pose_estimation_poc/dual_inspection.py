@@ -12,8 +12,35 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# WORKSPACE_DIR = os.path.dirname(SCRIPT_DIR)
+
+# Resolve application directories
+if getattr(sys, "frozen", False):
+    # Packaged application: use the extracted PCB utility directory
+    SCRIPT_DIR = os.path.join(
+        sys._MEIPASS,
+        "wiring-and-solder-merged",
+        "pose_estimation_poc"
+    )
+else:
+    # Normal Python execution
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
 WORKSPACE_DIR = os.path.dirname(SCRIPT_DIR)
+
+# Writable application data directory
+if getattr(sys, "frozen", False):
+    DATA_DIR = os.path.join(
+        os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+        "QualityInspection",
+        "PCB",
+        "pose_estimation_poc"
+    )
+else:
+    DATA_DIR = SCRIPT_DIR
+
+WORKSPACE_DATA_DIR = os.path.dirname(DATA_DIR)
 
 # Path to inspect_pose in this directory
 if SCRIPT_DIR not in sys.path:
@@ -30,7 +57,7 @@ def get_pose_model():
     global _POSE_MODEL
     if _POSE_MODEL is None:
         p_paths = [
-            os.path.join(SCRIPT_DIR, "runs", "wire_pose_model", "weights", "best.pt"),
+            os.path.join(DATA_DIR, "runs", "wire_pose_model", "weights", "best.pt"),
             os.path.join(SCRIPT_DIR, "yolov8n-pose.pt"),
         ]
         chosen = None
@@ -60,17 +87,33 @@ def get_origin3_model():
     global _ORIGIN3_MODEL
     if _ORIGIN3_MODEL is None:
         o_paths = [
+            # First priority: User-trained model in LocalAppData
+            os.path.join(DATA_DIR, "runs", "origin3_model", "weights", "best.pt"),
+
+            # Second priority: Bundled trained Origin 3 model
             os.path.join(SCRIPT_DIR, "runs", "origin3_model", "weights", "best.pt"),
-            os.path.join(WORKSPACE_DIR, "runs", "origin3_model", "weights", "best.pt"),
+
+            # Third priority: Generic YOLO fallback
             os.path.join(SCRIPT_DIR, "yolov8n.pt"),
-            os.path.join(WORKSPACE_DIR, "yolov8n.pt"),
         ]
         chosen = None
         for p in o_paths:
             if os.path.exists(p):
                 chosen = p
                 break
+        # if chosen is None:
+        #     raise FileNotFoundError("Origin 3 model weights not found!")
+
         if chosen is None:
+            print("\n[DEBUG] Origin 3 model paths:")
+            print(f"SCRIPT_DIR: {SCRIPT_DIR}")
+            print(f"WORKSPACE_DIR: {WORKSPACE_DIR}")
+            print(f"DATA_DIR: {DATA_DIR}")
+
+            print("\n[DEBUG] Checking candidate files:")
+            for p in o_paths:
+                print(f"{p} -> {os.path.exists(p)}")
+
             raise FileNotFoundError("Origin 3 model weights not found!")
         print(f"[DualInspection] Loading Origin 3 model from: {chosen}")
         _ORIGIN3_MODEL = YOLO(chosen)

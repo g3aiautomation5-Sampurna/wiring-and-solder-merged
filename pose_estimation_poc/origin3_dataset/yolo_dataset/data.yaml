@@ -1,4 +1,4 @@
-path: C:/Users/SM 461/Desktop/merged utility/pose_estimation_poc/origin3_dataset/yolo_dataset
+path: C:/Users/SM 470/Desktop/Portal/wiring-and-solder-merged/pose_estimation_poc/origin3_dataset/yolo_dataset
 train: images/train
 val: images/val
 names:
